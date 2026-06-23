@@ -5,7 +5,8 @@ import { HumanMessage, MessageContentComplex } from '@langchain/core/messages';
 import { z } from 'zod';
 
 // const DEFAULT_MODEL = 'gemini-2.5-flash-lite';
-const DEFAULT_MODEL = 'gemini-3.1-flash-lite';
+// const DEFAULT_MODEL = 'gemini-3.1-flash-lite';
+const DEFAULT_MODEL = 'gemini-3.5-flash';
 const MAX_RETRIES = 2;
 
 /** 1 phần nội dung gửi cho model (text / ảnh / media như PDF). */

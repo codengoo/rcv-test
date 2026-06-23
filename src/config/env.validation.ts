@@ -13,9 +13,19 @@ export class EnvironmentVariables {
   GOOGLE_SHEET_ID!: string;
 
   // ID folder Google Drive để lưu ảnh bài làm (link CDN Discord hết hạn).
-  // Folder phải được chia sẻ quyền Editor cho email service account.
   @IsString()
   GOOGLE_DRIVE_FOLDER_ID!: string;
+
+  // OAuth2 của TÀI KHOẢN người dùng để upload Drive (service account không có
+  // quota lưu trữ). Lấy refresh token 1 lần bằng: npm run token:drive
+  @IsString()
+  GOOGLE_OAUTH_CLIENT_ID!: string;
+
+  @IsString()
+  GOOGLE_OAUTH_CLIENT_SECRET!: string;
+
+  @IsString()
+  GOOGLE_OAUTH_REFRESH_TOKEN!: string;
 
   // API key Gemini cho luồng đọc/chấm bài làm + giải đề.
   @IsString()

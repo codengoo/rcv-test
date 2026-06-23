@@ -1,12 +1,8 @@
-import { existsSync } from 'fs';
-import { resolve } from 'path';
 import { Readable } from 'stream';
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { google, drive_v3 } from 'googleapis';
 
-const SCOPES = ['https://www.googleapis.com/auth/drive'];
-const DEFAULT_KEY_FILE = 'service-account.json';
 const MAX_RETRIES = 3;
 
 /** Kết quả upload 1 file lên Drive. */
@@ -16,8 +12,10 @@ export interface DriveUpload {
 }
 
 /**
- * Generic Google Drive client (googleapis) — dùng chung service account với
- * Sheets. Upload buffer vào 1 folder và trả link xem. Không chứa logic domain.
+ * Generic Google Drive client (googleapis). Xác thực bằng OAuth2 của TÀI KHOẢN
+ * người dùng (không phải service account) — vì service account không có quota
+ * lưu trữ, upload vào My Drive sẽ bị từ chối. File tạo ra thuộc sở hữu tài
+ * khoản đã cấp refresh token. Upload buffer vào 1 folder và trả link xem.
  */
 @Injectable()
 export class GoogleDriveService implements OnModuleInit {
@@ -39,13 +37,16 @@ export class GoogleDriveService implements OnModuleInit {
 
   private getClient(): drive_v3.Drive {
     if (this.client) return this.client;
-    const keyFile = resolve(
-      this.config.get<string>('GOOGLE_SERVICE_ACCOUNT_FILE') ?? DEFAULT_KEY_FILE,
+    const clientId = this.config.getOrThrow<string>('GOOGLE_OAUTH_CLIENT_ID');
+    const clientSecret = this.config.getOrThrow<string>(
+      'GOOGLE_OAUTH_CLIENT_SECRET',
     );
-    if (!existsSync(keyFile)) {
-      throw new Error(`Không tìm thấy service account file "${keyFile}"`);
-    }
-    const auth = new google.auth.GoogleAuth({ keyFile, scopes: SCOPES });
+    const refreshToken = this.config.getOrThrow<string>(
+      'GOOGLE_OAUTH_REFRESH_TOKEN',
+    );
+    // OAuth2 tự refresh access token từ refresh token đã cấp.
+    const auth = new google.auth.OAuth2(clientId, clientSecret);
+    auth.setCredentials({ refresh_token: refreshToken });
     this.client = google.drive({ version: 'v3', auth });
     return this.client;
   }
