@@ -407,7 +407,7 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
     const links: string[] = [];
     for (let i = 0; i < images.length; i++) {
       const a = images[i];
-      const res = await fetch(a.url);
+      const res = await fetch(a.proxyURL);
       if (!res.ok) throw new Error(`tải ảnh ${a.name} fail HTTP ${res.status}`);
       const buf = Buffer.from(await res.arrayBuffer());
       const mime = a.contentType?.split(";")[0] ?? "image/jpeg";
