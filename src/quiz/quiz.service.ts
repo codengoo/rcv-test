@@ -10,11 +10,30 @@ const PDF_MIME = 'application/pdf';
 const DOCX_MIME =
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
+// Prompt ép ĐÚNG template Markdown bên dưới để parser đọc được ổn định.
 const QUIZ_MD_PROMPT =
   'Bạn là trợ giảng. Đây là một ĐỀ THI/BÀI TẬP. Hãy GIẢI toàn bộ đề và xuất ' +
-  'kết quả dưới dạng MARKDOWN sạch, dễ đọc. Với mỗi câu: ghi số câu, đề bài, ' +
-  'các lựa chọn (nếu có), **Đáp án** đúng và *Lời giải* ngắn gọn. Mở đầu bằng ' +
-  'tiêu đề đề và mã đề (nếu có). Chỉ xuất Markdown, không kèm giải thích thừa.';
+  'kết quả Markdown theo ĐÚNG MẪU sau, KHÔNG thêm bớt định dạng:\n\n' +
+  '# <Tiêu đề đề>\n' +
+  'Mã đề: <mã đề, vd A01; bỏ trống nếu không có>\n\n' +
+  '### Câu 1\n' +
+  '<nội dung câu hỏi, viết trên 1 dòng>\n' +
+  'A. <lựa chọn A>\n' +
+  'B. <lựa chọn B>\n' +
+  'C. <lựa chọn C>\n' +
+  'D. <lựa chọn D>\n' +
+  'Đáp án: <đáp án đúng>\n' +
+  'Lời giải: <giải thích ngắn gọn>\n\n' +
+  '### Câu 2\n' +
+  '...\n\n' +
+  'QUY TẮC BẮT BUỘC:\n' +
+  '- Mỗi câu mở đầu bằng "### Câu <số>" (số nguyên tăng dần), trên dòng riêng.\n' +
+  '- Mỗi câu PHẢI có dòng "Đáp án:" và dòng "Lời giải:".\n' +
+  '- Câu TRẮC NGHIỆM: liệt kê các lựa chọn, mỗi dòng bắt đầu "A. ", "B. "... ' +
+  'và dòng "Đáp án:" CHỈ ghi MỘT chữ cái (A/B/C/D).\n' +
+  '- Câu điền/sửa lỗi/tự luận: KHÔNG có A./B...; "Đáp án:" ghi nội dung đúng.\n' +
+  '- TUYỆT ĐỐI không dùng gạch đầu dòng (*, -), không in đậm/nghiêng/gạch chân ' +
+  '(**, *, <u>), không thẻ HTML, không bảng. Chỉ văn bản thuần theo mẫu.';
 
 export interface QuizResult {
   title: string;
@@ -116,26 +135,24 @@ export class QuizService {
 
   /**
    * Parse Markdown (do QUIZ_MD_PROMPT sinh) thành Exam — THUẦN regex, không AI.
-   * Format kỳ vọng:
-   *   # <title>            (dòng tiêu đề, 1 dấu #)
+   * Template chuẩn (do QUIZ_MD_PROMPT ép):
+   *   # <title>
    *   Mã đề: <examCode>
    *   ### Câu <id>
-   *   **Đề bài:** ...      (có thể nhiều dòng)
-   *   A. ... / B. ...      (lựa chọn, nếu là trắc nghiệm)
-   *   **Đáp án:** ...      (có thể nhiều dòng)
-   *   *Lời giải:* ...
-   * Khoan dung với dòng thừa; ráp text nhiều dòng vào field đang mở.
+   *   <nội dung câu hỏi>
+   *   A. ... / B. ...      (lựa chọn, nếu trắc nghiệm)
+   *   Đáp án: <đáp án>
+   *   Lời giải: <giải thích>
+   * Mỗi dòng được CHUẨN HÓA trước (bóc *, #, bullet, thẻ HTML) nên vẫn đọc được
+   * dù model lỡ tô đậm / thêm gạch đầu dòng.
    */
   parseMarkdownToExam(md: string): Exam {
-    const lines = md.split(/\r?\n/);
-    const reTitle = /^#\s+(.*)$/;
-    const reExamCode = /^\s*Mã đề\s*[:：]\s*(.*)$/i;
-    const reHeading = /^#{2,4}\s*Câu\s*(.+?)\s*$/i;
-    const reQuestion = /^\s*\*\*\s*Đề bài\s*[:：]?\s*\*\*\s*(.*)$/i;
-    const reAnswer = /^\s*\*\*\s*Đáp án\s*[:：]?\s*\*\*\s*(.*)$/i;
-    const reExplain = /^\s*\*+\s*Lời giải\s*[:：]?\s*\*+\s*(.*)$/i;
-    const reOption = /^\s*([A-DĐ])[.)]\s*(.*)$/;
-    const reSep = /^\s*-{3,}\s*$/;
+    const reHeading = /^Câu\s+([0-9]+[a-zA-Z]?)\b\s*[:.)]?\s*(.*)$/i;
+    const reExamCode = /^Mã đề\s*[:：]\s*(.*)$/i;
+    const reQuestion = /^Đề bài\s*[:：]\s*(.*)$/i; // nhãn tùy chọn (dung sai)
+    const reAnswer = /^Đáp án\s*[:：]\s*(.*)$/i;
+    const reExplain = /^Lời giải\s*[:：]\s*(.*)$/i;
+    const reOption = /^([A-DĐ])\s*[.)]\s*(.*)$/;
 
     let title = '';
     let examCode = '';
@@ -167,24 +184,37 @@ export class QuizService {
       field = null;
     };
 
-    for (const line of lines) {
-      if (reSep.test(line)) continue;
+    for (const raw of md.split(/\r?\n/)) {
+      // Title: dòng "# ..." (đúng 1 dấu #) — bắt trên raw, chỉ trước câu đầu.
+      const mTitle = /^#\s+(.+)$/.exec(raw.trim());
+      if (mTitle && !cur && !title) {
+        title = mTitle[1]
+          .replace(/\*+/g, '')
+          .replace(/^(ĐÁP ÁN|ĐỀ THI\/BÀI TẬP|ĐỀ THI|ĐỀ)\s*[:：]?\s*/i, '')
+          .trim();
+        continue;
+      }
+
+      const line = this.cleanLine(raw);
+      if (!line) continue;
 
       const mHeading = reHeading.exec(line);
       if (mHeading) {
         flush();
-        cur = { id: mHeading[1], question: [], options: [], answer: [], explanation: [] };
-        field = null;
+        cur = {
+          id: mHeading[1],
+          question: [],
+          options: [],
+          answer: [],
+          explanation: [],
+        };
+        field = 'question';
+        if (mHeading[2].trim()) cur.question.push(mHeading[2].trim());
         continue;
       }
 
-      // Trước câu đầu tiên: bắt title + mã đề.
+      // Trước câu đầu tiên: chỉ quan tâm mã đề.
       if (!cur) {
-        const mTitle = reTitle.exec(line);
-        if (mTitle && !title) {
-          title = mTitle[1].replace(/^ĐỀ THI\/BÀI TẬP\s*[:：]?\s*/i, '').trim();
-          continue;
-        }
         const mCode = reExamCode.exec(line);
         if (mCode && !examCode) examCode = mCode[1].trim();
         continue;
@@ -215,15 +245,25 @@ export class QuizService {
       }
 
       // Dòng văn bản thường → nối vào field đang mở.
-      if (!line.trim()) continue;
-      if (field === 'question') cur.question.push(line.trim());
-      else if (field === 'answer') cur.answer.push(line.trim());
-      else if (field === 'explanation') cur.explanation.push(line.trim());
+      if (field === 'question') cur.question.push(line);
+      else if (field === 'answer') cur.answer.push(line);
+      else if (field === 'explanation') cur.explanation.push(line);
     }
     flush();
 
     // Validate để chắc khớp schema (mọi field bắt buộc đều đã có).
     return examSchema.parse({ title, examCode, questions });
+  }
+
+  /** Chuẩn hóa 1 dòng MD: bóc heading #, bullet, in đậm/nghiêng, thẻ HTML. */
+  private cleanLine(raw: string): string {
+    let t = raw.trim();
+    t = t.replace(/^#{1,6}\s+/, ''); // heading ###
+    t = t.replace(/^[*\-+•]\s+/, ''); // bullet đầu dòng (1 cấp)
+    t = t.replace(/<\/?[a-z][^>]*>/gi, ''); // thẻ HTML như <u>
+    t = t.replace(/\*+/g, ''); // in đậm/nghiêng ** *
+    t = t.replace(/`+/g, ''); // code ``
+    return t.trim();
   }
 
   /** Suy ra loại câu khi parse MD (không có field type tường minh). */
