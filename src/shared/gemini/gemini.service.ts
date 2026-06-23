@@ -25,7 +25,14 @@ export class GeminiService {
     const cached = this.llmCache.get(model);
     if (cached) return cached;
     const apiKey = this.config.getOrThrow<string>('GEMINI_API_KEY');
-    const llm = new ChatGoogleGenerativeAI({ model, apiKey, temperature: 0 });
+    // maxOutputTokens cao: đề thi giải đầy đủ + lời giải → JSON rất dài,
+    // mặc định thấp khiến output bị cắt giữa chừng (Unterminated string).
+    const llm = new ChatGoogleGenerativeAI({
+      model,
+      apiKey,
+      temperature: 0,
+      maxOutputTokens: 65536,
+    });
     this.llmCache.set(model, llm);
     return llm;
   }
@@ -68,25 +75,53 @@ export class GeminiService {
     this.logger.log(
       `Gọi ${model} structured "${name}" (${parts.length} part)...`,
     );
+    return this.withRetry(
+      () => structured.invoke([message]) as Promise<T>,
+      'extractStructured',
+    );
+  }
+
+  /**
+   * Gọi model với content parts, trả về TEXT thường (không ép schema). Dùng khi
+   * cần output dạng tự do như Markdown — tránh giới hạn/parse của structured.
+   */
+  async generateText(
+    parts: AiPart[],
+    opts?: { model?: string },
+  ): Promise<string> {
+    const model = opts?.model ?? DEFAULT_MODEL;
+    const llm = this.getLlm(model);
+    const message = new HumanMessage({ content: parts });
+
+    this.logger.log(`Gọi ${model} text (${parts.length} part)...`);
+    return this.withRetry(async () => {
+      const result = await llm.invoke([message]);
+      const content = result.content;
+      if (typeof content === 'string') return content;
+      // content phức hợp → ghép các phần text lại.
+      return content
+        .map((c) => (typeof c === 'object' && 'text' in c ? c.text : ''))
+        .join('');
+    }, 'generateText');
+  }
+
+  /** Bọc retry ngắn + log dùng chung cho các lời gọi model. */
+  private async withRetry<R>(fn: () => Promise<R>, label: string): Promise<R> {
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
-        const result = (await structured.invoke([message])) as T;
-        this.logger.log(`${model} phản hồi OK (lần ${attempt})`);
+        const result = await fn();
+        this.logger.log(`${label} phản hồi OK (lần ${attempt})`);
         return result;
       } catch (err) {
         const msg = (err as Error).message;
         if (attempt === MAX_RETRIES) {
-          this.logger.error(
-            `extractStructured fail sau ${MAX_RETRIES} lần: ${msg}`,
-          );
+          this.logger.error(`${label} fail sau ${MAX_RETRIES} lần: ${msg}`);
           throw err;
         }
-        this.logger.warn(
-          `extractStructured lỗi (lần ${attempt}), retry: ${msg}`,
-        );
+        this.logger.warn(`${label} lỗi (lần ${attempt}), retry: ${msg}`);
         await new Promise((r) => setTimeout(r, 500 * attempt));
       }
     }
-    throw new Error('extractStructured: unreachable');
+    throw new Error(`${label}: unreachable`);
   }
 }

@@ -187,7 +187,8 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
             )
             .addFields(
               { name: "File đề", value: result.originalName },
-              { name: "Đã lưu (JSON)", value: "`" + result.savedPath + "`" },
+              { name: "Đáp án (JSON)", value: "`" + result.savedPath + "`" },
+              { name: "Bản giải (MD)", value: "`" + result.mdPath + "`" },
             ),
         ],
       });
