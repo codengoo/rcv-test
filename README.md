@@ -3,7 +3,7 @@
 Bot server NestJS + discord.js phục vụ chấm bài thi qua **slash command**:
 
 - **`/add-quiz`** — tải lên đề (PDF/DOCX), Gemini giải đề và lưu **đáp án + chỉ dẫn chấm** dạng markdown vào `database/`.
-- **`/cham-bai`** — tải lên **ảnh bài làm** của thí sinh + thông tin thí sinh; Gemini đọc ảnh, tự nhận **Mã đề**, đối chiếu đáp án trong `database/`, chấm điểm; bot ghi 1 dòng vào Google Sheet.
+- **`/grading`** — tải lên **ảnh bài làm** của thí sinh (chỉ ảnh, không nhập tay); Gemini đọc ảnh, **tự trích thông tin thí sinh** (họ tên, bố mẹ, SĐT, lớp, mã đề, câu trả lời) theo format chuẩn, đối chiếu đáp án trong `database/`, chấm điểm; bot ghi 1 dòng vào Google Sheet.
 
 > Bot **không** còn lắng nghe tin nhắn channel — toàn bộ tương tác qua slash command.
 
@@ -13,21 +13,21 @@ Bot server NestJS + discord.js phục vụ chấm bài thi qua **slash command**
 /add-quiz (PDF/DOCX) ─► DiscordService ─► QuizService ─► database/<slug>.md
                                           (parse pdf/docx + Gemini giải đề)
 
-/cham-bai (ảnh + info) ─► DiscordService ─► GradeService ─► Gemini ─► điểm
-                          (tải ảnh, ghi sheet)  (đọc database/*.md,
-                                                 đọc ảnh, tự nhận mã đề, chấm)
+/grading (chỉ ảnh) ─► DiscordService ─► GradeService ─► Gemini ─► info + điểm
+                      (tải ảnh, ghi sheet)  (đọc database/*.md, đọc ảnh,
+                                             trích info thí sinh + chấm)
                                    │
                                    └─► GoogleSheetsService ─► Google Sheet (1 dòng)
 ```
 
 - `src/discord/` — discord.js client, đăng ký + xử lý 2 slash command.
 - `src/quiz/` — **QuizService**: parse PDF (native) / DOCX (mammoth), gọi Gemini giải đề, lưu markdown vào `database/`.
-- `src/grade/` — **GradeService**: nạp toàn bộ đáp án `database/*.md`, gửi ảnh bài làm cho Gemini, tự nhận mã đề và chấm điểm (mỗi câu 1 điểm theo chỉ dẫn chấm).
+- `src/grade/` — **GradeService**: nạp toàn bộ đáp án `database/*.md`, gửi ảnh bài làm cho Gemini; AI trích thông tin thí sinh (tên, bố mẹ, SĐT, lớp, mã đề, câu trả lời) theo format chuẩn rồi đối chiếu đáp án để chấm điểm (mỗi câu 1 điểm theo chỉ dẫn chấm).
 - `src/shared/gemini/` — **generic** AI client: `GeminiService.extractStructured(schema, parts)` (LangChain `@langchain/google-genai`) + helper `textPart/imagePart/mediaPart`. Dùng chung cho giải đề và chấm bài.
 - `src/shared/google-sheets/` — **generic** Google Sheets client (`googleapis`): append/get theo `spreadsheetId` + `range`, retry, auth từ service account.
 - `src/config/` — validate biến môi trường khi boot.
 
-Mỗi lần `/cham-bai` → **1 dòng** trong Google Sheet:
+Mỗi lần `/grading` → **1 dòng** trong Google Sheet:
 
 | A | B | C | D | E | F |
 |---|---|---|---|---|---|
@@ -81,7 +81,7 @@ Khi chạy đúng, log sẽ có:
 ```
 [SheetsService] Connected to sheet "<tên sheet>"
 [DiscordService] Discord logged in as <bot>#1234
-[DiscordService] Đã đăng ký /add-quiz + /cham-bai cho guild <id>
+[DiscordService] Đã đăng ký /add-quiz + /grading cho guild <id>
 ```
 
 ## Giải đề bằng `/add-quiz`
@@ -99,35 +99,32 @@ Gõ slash command **`/add-quiz`** trong server và đính kèm file đề **PDF*
 - DOCX chỉ lấy **text thô** (mất hình/bảng phức tạp) — đề có hình nên dùng PDF.
 - Lỗi (AI/quota/parse) → embed báo lỗi, không crash.
 
-## Chấm bài bằng `/cham-bai`
+## Chấm bài bằng `/grading`
 
 > Trước tiên phải dùng `/add-quiz` để có file đáp án `.md` trong `database/` (mỗi file ghi rõ **Mã đề**).
 
-Gõ **`/cham-bai`** và điền:
+Gõ **`/grading`** và **chỉ đính ảnh bài làm** — không nhập tay thông tin thí sinh:
 
 | Option | Bắt buộc | Ý nghĩa |
 |---|---|---|
 | `file` | ✅ | Ảnh bài làm (trang 1) |
-| `hoten` | ✅ | Họ tên thí sinh |
-| `bome` | ✅ | Tên bố mẹ |
-| `sdt` | ✅ | Số điện thoại bố mẹ |
-| `lop` | ✅ | Lớp |
 | `file2`…`file5` | ❌ | Ảnh bài làm các trang tiếp theo (nếu nhiều trang) |
 
 Bot:
 
 1. `deferReply`, gom tất cả ảnh `image/*` từ `file`…`file5`, tải về.
 2. `GradeService` nạp toàn bộ đáp án `database/*.md`, gửi ảnh + kho đáp án cho Gemini.
-3. Gemini đọc bài làm, tự đọc **Mã đề** ghi trên bài, chọn đề khớp, chấm từng câu (mỗi câu 1 điểm).
-4. Append 1 dòng `[Họ tên, Bố mẹ, SĐT, Lớp, Điểm, Link ảnh]` vào Google Sheet.
-5. Reply **embed**: điểm (dạng `số câu đúng/tổng`), mã đề, file đáp án dùng, ghi chú.
+3. Gemini **trích thông tin thí sinh** từ ảnh (họ tên, bố mẹ, SĐT, lớp, mã đề, câu trả lời từng câu — quy chuẩn A/B/C/D cho trắc nghiệm), chọn đề khớp **Mã đề**, đối chiếu và chấm từng câu (mỗi câu 1 điểm).
+4. Append 1 dòng `[Họ tên, Bố mẹ, SĐT, Lớp, Điểm, Link ảnh]` (thông tin do AI trích) vào Google Sheet.
+5. Reply **embed**: tên + điểm (dạng `số câu đúng/tổng`), mã đề, file đáp án dùng, ghi chú.
 
 **Giới hạn:**
+- Toàn bộ thông tin thí sinh do **AI đọc từ ảnh** — bài làm cần ghi rõ họ tên/bố mẹ/SĐT/lớp/mã đề; thiếu sẽ để trống và ghi vào `note`.
 - Chỉ đọc attachment **`image/*`**; option khác định dạng bị bỏ qua.
 - Điểm dạng **`số câu đúng / tổng`** (vd `9/12`).
 - Link ảnh dùng **URL discord** (`cdn.discordapp.com`) — URL này có chữ ký và **có thể hết hạn** theo thời gian.
 - `database/` chưa có đáp án nào → embed báo lỗi, yêu cầu chạy `/add-quiz` trước.
-- AI đọc sai mã đề / chữ viết tay là rủi ro chấp nhận được — dùng `note` + embed để giám khảo soát lại.
+- AI đọc sai chữ viết tay / mã đề là rủi ro chấp nhận được — dùng `note` + embed để giám khảo soát lại.
 - Lỗi (AI/quota/tải ảnh/ghi sheet) → embed báo lỗi, không crash.
 
 ## Hành vi & giới hạn chung

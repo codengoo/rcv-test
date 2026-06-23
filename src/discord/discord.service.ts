@@ -62,7 +62,7 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
       if (!interaction.isChatInputCommand()) return;
       if (interaction.commandName === 'add-quiz') {
         void this.handleAddQuiz(interaction);
-      } else if (interaction.commandName === 'cham-bai') {
+      } else if (interaction.commandName === 'grading') {
         void this.handleGrade(interaction);
       }
     });
@@ -75,7 +75,7 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
     await this.client.destroy();
   }
 
-  /** Đăng ký /add-quiz + /cham-bai theo guild (hiện ngay). */
+  /** Đăng ký /add-quiz + /grading theo guild (hiện ngay). */
   private async registerCommands(): Promise<void> {
     try {
       const addQuiz = new SlashCommandBuilder()
@@ -90,32 +90,17 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
             .setRequired(true),
         );
 
-      // Lưu ý: option bắt buộc phải đứng TRƯỚC option tùy chọn.
-      const chamBai = new SlashCommandBuilder()
-        .setName('cham-bai')
+      // Chỉ nhận ảnh; AI tự đọc thông tin thí sinh + mã đề + câu trả lời.
+      const grading = new SlashCommandBuilder()
+        .setName('grading')
         .setDescription(
-          'Chấm bài làm của thí sinh từ ảnh, ghi điểm vào Google Sheet',
+          'Chấm bài làm từ ảnh: AI đọc thông tin thí sinh + chấm điểm, ghi vào Google Sheet',
         )
         .addAttachmentOption((o) =>
           o
             .setName('file')
             .setDescription('Ảnh bài làm (trang 1)')
             .setRequired(true),
-        )
-        .addStringOption((o) =>
-          o.setName('hoten').setDescription('Họ tên thí sinh').setRequired(true),
-        )
-        .addStringOption((o) =>
-          o.setName('bome').setDescription('Tên bố mẹ').setRequired(true),
-        )
-        .addStringOption((o) =>
-          o
-            .setName('sdt')
-            .setDescription('Số điện thoại bố mẹ')
-            .setRequired(true),
-        )
-        .addStringOption((o) =>
-          o.setName('lop').setDescription('Lớp của thí sinh').setRequired(true),
         )
         .addAttachmentOption((o) =>
           o.setName('file2').setDescription('Ảnh bài làm trang 2 (tùy chọn)'),
@@ -131,9 +116,9 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
         );
 
       const guild = await this.client.guilds.fetch(this.guildId);
-      await guild.commands.set([addQuiz.toJSON(), chamBai.toJSON()]);
+      await guild.commands.set([addQuiz.toJSON(), grading.toJSON()]);
       this.logger.log(
-        `Đã đăng ký /add-quiz + /cham-bai cho guild ${this.guildId}`,
+        `Đã đăng ký /add-quiz + /grading cho guild ${this.guildId}`,
       );
     } catch (err) {
       this.logger.error(
@@ -200,17 +185,14 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Xử lý /cham-bai: gom ảnh bài làm → GradeService chấm → append sheet → embed.
-   * Cột A→F: Họ tên, Bố mẹ, SĐT bố mẹ, Lớp, Điểm, Link ảnh.
+   * Xử lý /grading: gom ảnh bài làm → GradeService đọc thông tin thí sinh +
+   * chấm → append sheet → embed. Cột A→F lấy từ dữ liệu AI trích:
+   * Họ tên, Bố mẹ, SĐT bố mẹ, Lớp, Điểm, Link ảnh.
    */
   private async handleGrade(
     interaction: ChatInputCommandInteraction,
   ): Promise<void> {
     await interaction.deferReply();
-    const hoten = interaction.options.getString('hoten', true);
-    const bome = interaction.options.getString('bome', true);
-    const sdt = interaction.options.getString('sdt', true);
-    const lop = interaction.options.getString('lop', true);
 
     const images: Attachment[] = IMAGE_OPTION_NAMES.map((n) =>
       interaction.options.getAttachment(n),
@@ -219,7 +201,7 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
       .filter((a) => a.contentType?.startsWith('image/'));
 
     this.logger.log(
-      `/cham-bai từ ${interaction.user.tag}: thí sinh="${hoten}" lớp="${lop}" ảnh=${images.length}`,
+      `/grading từ ${interaction.user.tag}: ${images.length} ảnh`,
     );
 
     if (images.length === 0) {
@@ -259,22 +241,30 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
         this.sheetRange = await this.sheets.getFirstSheetTitle(this.sheetId);
       }
 
-      const row: CellValue[] = [hoten, bome, sdt, lop, result.score, imageLinks];
+      // Cột A→F = thông tin AI trích + điểm + link ảnh.
+      const row: CellValue[] = [
+        result.hoTen,
+        result.boMe,
+        result.sdtBoMe,
+        result.lop,
+        result.score,
+        imageLinks,
+      ];
       await this.sheets.appendRow(this.sheetId, this.sheetRange, row);
       this.logger.log(
-        `✅ Đã ghi điểm "${hoten}" ${result.score} (mã đề ${result.maDe}) vào sheet`,
+        `✅ Đã ghi điểm "${result.hoTen}" ${result.score} (mã đề ${result.maDe}) vào sheet`,
       );
 
       const embed = new EmbedBuilder()
         .setColor(0x2ecc71)
-        .setTitle(`✅ Đã chấm: ${hoten}`)
+        .setTitle(`✅ Đã chấm: ${result.hoTen || '(không đọc được tên)'}`)
         .setDescription(
           `**Điểm:** ${result.score}  •  **Mã đề:** ${result.maDe || '(không đọc được)'}`,
         )
         .addFields(
-          { name: 'Lớp', value: lop || '-', inline: true },
-          { name: 'Bố mẹ', value: bome || '-', inline: true },
-          { name: 'SĐT', value: sdt || '-', inline: true },
+          { name: 'Lớp', value: result.lop || '-', inline: true },
+          { name: 'Bố mẹ', value: result.boMe || '-', inline: true },
+          { name: 'SĐT', value: result.sdtBoMe || '-', inline: true },
           {
             name: 'Đáp án dùng',
             value: result.matchedFile || '(AI chọn đề gần nhất)',
@@ -285,7 +275,7 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
       }
       await interaction.editReply({ embeds: [embed] });
     } catch (err) {
-      this.logger.error(`/cham-bai xử lý lỗi: ${(err as Error).message}`);
+      this.logger.error(`/grading xử lý lỗi: ${(err as Error).message}`);
       await interaction.editReply({
         embeds: [
           new EmbedBuilder()

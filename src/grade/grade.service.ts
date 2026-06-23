@@ -7,16 +7,23 @@ import { gradeResultSchema, GradeResult } from './grade.schema';
 const DB_DIR = 'database';
 
 const GRADE_PROMPT =
-  'Bạn là giám khảo chấm bài. Các ảnh đính kèm là BÀI LÀM của MỘT thí sinh ' +
-  '(có thể nhiều trang/nhiều ảnh — đọc tất cả). Quy trình:\n' +
-  '1) Đọc "Mã đề" ghi trên bài làm.\n' +
-  '2) Trong KHO ĐÁP ÁN bên dưới, chọn đề có MÃ ĐỀ trùng khớp.\n' +
-  '3) Đối chiếu từng câu: đáp án thí sinh chọn vs đáp án đúng + chỉ dẫn chấm; ' +
-  'mỗi câu đúng tính 1 điểm.\n' +
-  '4) Trả về theo schema: maDe, totalQuestions (tổng số câu của đề đó), ' +
-  'correctCount (số câu đúng), perQuestion (chi tiết từng câu), note.\n' +
-  'Nếu không đọc được mã đề hoặc không có đề khớp, hãy chọn đề phù hợp nhất, ' +
-  'vẫn chấm và ghi lý do vào note.';
+  'Bạn là giám khảo. Các ảnh đính kèm là BÀI LÀM của MỘT thí sinh ' +
+  '(có thể nhiều trang/nhiều ảnh — đọc TẤT CẢ).\n\n' +
+  'BƯỚC 1 — TRÍCH XUẤT (quy chuẩn) thông tin từ ảnh:\n' +
+  '  - hoTen: họ tên thí sinh.\n' +
+  '  - boMe: tên bố/mẹ (phụ huynh).\n' +
+  '  - sdtBoMe: số điện thoại bố/mẹ (CHỈ giữ chữ số).\n' +
+  '  - lop: lớp.\n' +
+  '  - maDe: mã đề ghi trên bài làm.\n' +
+  '  - câu trả lời từng câu (quy chuẩn: trắc nghiệm ghi chữ cái A/B/C/D in hoa; ' +
+  'tự luận ghi nội dung ngắn gọn).\n\n' +
+  'BƯỚC 2 — ĐỐI CHIẾU & CHẤM:\n' +
+  '  - Trong KHO ĐÁP ÁN bên dưới, chọn đề có MÃ ĐỀ trùng với maDe vừa đọc.\n' +
+  '  - So câu trả lời thí sinh với đáp án đúng + chỉ dẫn chấm; mỗi câu đúng 1 điểm.\n' +
+  '  - Điền perQuestion {cau, dapAnChon (câu trả lời thí sinh), dapAnDung, dung}, ' +
+  'totalQuestions (tổng số câu của đề đó), correctCount (số câu đúng).\n\n' +
+  'Thiếu thông tin nào thì để "" và ghi lý do vào note. Nếu không đọc được mã đề ' +
+  'hoặc không có đề khớp, chọn đề phù hợp nhất, vẫn chấm và ghi lý do vào note.';
 
 /** Một file đáp án trong database/ đã được parse. */
 interface AnswerKey {
@@ -34,7 +41,13 @@ export interface GradeImage {
 
 /** Kết quả chấm trả ra cho caller (Discord). */
 export interface GradeOutput {
+  // Thông tin thí sinh trích từ ảnh.
+  hoTen: string;
+  boMe: string;
+  sdtBoMe: string;
+  lop: string;
   maDe: string;
+  // Kết quả chấm.
   score: string; // "9/12"
   correctCount: number;
   totalQuestions: number;
@@ -89,6 +102,8 @@ export class GradeService {
    */
   async grade(images: GradeImage[]): Promise<GradeOutput> {
     const keys = await this.loadAnswerKeys();
+    console.log(keys);
+    
     if (keys.length === 0) {
       throw new Error(
         'Chưa có đáp án nào trong database/. Dùng /add-quiz tạo đề trước khi chấm.',
@@ -120,10 +135,15 @@ export class GradeService {
     );
     const score = `${result.correctCount}/${result.totalQuestions}`;
     this.logger.log(
-      `Chấm xong: mã đề=${result.maDe} điểm=${score} (file khớp: ${matched?.file ?? 'không khớp'})`,
+      `Chấm xong: thí sinh="${result.hoTen}" lớp="${result.lop}" mã đề=${result.maDe} ` +
+        `điểm=${score} (file khớp: ${matched?.file ?? 'không khớp'})`,
     );
 
     return {
+      hoTen: result.hoTen,
+      boMe: result.boMe,
+      sdtBoMe: result.sdtBoMe,
+      lop: result.lop,
       maDe: result.maDe,
       score,
       correctCount: result.correctCount,

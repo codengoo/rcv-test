@@ -5,7 +5,7 @@ export class EnvironmentVariables {
   @IsString()
   DISCORD_BOT_TOKEN!: string;
 
-  // ID server (guild) để đăng ký slash command /add-quiz, /cham-bai.
+  // ID server (guild) để đăng ký slash command /add-quiz, /grading.
   @IsString()
   DISCORD_GUILD_ID!: string;
 
