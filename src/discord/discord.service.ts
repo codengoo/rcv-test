@@ -3,8 +3,8 @@ import {
   Logger,
   OnModuleInit,
   OnModuleDestroy,
-} from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+} from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import {
   Client,
   Events,
@@ -14,15 +14,15 @@ import {
   ChatInputCommandInteraction,
   AutocompleteInteraction,
   Attachment,
-} from 'discord.js';
+} from "discord.js";
 import {
   GoogleSheetsService,
   CellValue,
-} from '../shared/google-sheets/google-sheets.service';
-import { QuizService } from '../quiz/quiz.service';
-import { GradeService, GradeImage } from '../grade/grade.service';
+} from "../shared/google-sheets/google-sheets.service";
+import { QuizService } from "../quiz/quiz.service";
+import { GradeService, GradeImage } from "../grade/grade.service";
 
-const IMAGE_OPTION_NAMES = ['file', 'file2', 'file3', 'file4', 'file5'];
+const IMAGE_OPTION_NAMES = ["file", "file2", "file3", "file4", "file5"];
 
 @Injectable()
 export class DiscordService implements OnModuleInit, OnModuleDestroy {
@@ -30,7 +30,7 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
   private readonly client: Client;
   private readonly sheetId: string;
   private readonly guildId: string;
-  private sheetRange = '';
+  private sheetRange = "";
 
   constructor(
     private readonly config: ConfigService,
@@ -38,8 +38,8 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
     private readonly quiz: QuizService,
     private readonly grade: GradeService,
   ) {
-    this.sheetId = this.config.getOrThrow<string>('GOOGLE_SHEET_ID');
-    this.guildId = this.config.getOrThrow<string>('DISCORD_GUILD_ID');
+    this.sheetId = this.config.getOrThrow<string>("GOOGLE_SHEET_ID");
+    this.guildId = this.config.getOrThrow<string>("DISCORD_GUILD_ID");
     // Chỉ cần Guilds (slash command). Không đọc nội dung message nữa.
     this.client = new Client({ intents: [GatewayIntentBits.Guilds] });
   }
@@ -61,20 +61,20 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
 
     this.client.on(Events.InteractionCreate, (interaction) => {
       if (interaction.isAutocomplete()) {
-        if (interaction.commandName === 'grading') {
+        if (interaction.commandName === "grading") {
           void this.handleGradingAutocomplete(interaction);
         }
         return;
       }
       if (!interaction.isChatInputCommand()) return;
-      if (interaction.commandName === 'add-quiz') {
+      if (interaction.commandName === "add-quiz") {
         void this.handleAddQuiz(interaction);
-      } else if (interaction.commandName === 'grading') {
+      } else if (interaction.commandName === "grading") {
         void this.handleGrade(interaction);
       }
     });
 
-    const token = this.config.getOrThrow<string>('DISCORD_BOT_TOKEN');
+    const token = this.config.getOrThrow<string>("DISCORD_BOT_TOKEN");
     await this.client.login(token);
   }
 
@@ -86,48 +86,51 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
   private async registerCommands(): Promise<void> {
     try {
       const addQuiz = new SlashCommandBuilder()
-        .setName('add-quiz')
+        .setName("add-quiz")
         .setDescription(
-          'Tải lên đề (PDF/DOCX), AI giải và lưu đáp án + chỉ dẫn chấm',
+          "Tải lên đề (PDF/DOCX), AI giải và lưu đáp án + chỉ dẫn chấm",
         )
         .addAttachmentOption((o) =>
           o
-            .setName('file')
-            .setDescription('File đề PDF hoặc DOCX')
+            .setName("file")
+            .setDescription("File đề PDF hoặc DOCX")
             .setRequired(true),
         );
 
       // Nhập tay mã đề (chọn file đáp án) + ảnh; AI đọc thông tin thí sinh,
       // mã đề (đối chiếu) và câu trả lời.
       const grading = new SlashCommandBuilder()
-        .setName('grading')
+        .setName("grading")
         .setDescription(
-          'Chấm bài làm từ ảnh: AI đọc thông tin thí sinh + chấm điểm, ghi vào Google Sheet',
+          "Chấm bài làm từ ảnh: AI đọc thông tin thí sinh + chấm điểm, ghi vào Google Sheet",
         )
         .addAttachmentOption((o) =>
           o
-            .setName('file')
-            .setDescription('Ảnh bài làm (trang 1)')
+            .setName("file")
+            .setDescription("Ảnh bài làm (trang 1)")
+            .setRequired(true),
+        )
+        .addAttachmentOption((o) =>
+          o
+            .setName("file2")
+            .setDescription("Ảnh bài làm trang 2")
             .setRequired(true),
         )
         .addStringOption((o) =>
           o
-            .setName('exam_code')
-            .setDescription('Chọn đề (rcv-<mã đề>) để chấm')
+            .setName("exam_code")
+            .setDescription("Chọn đề (rcv-<mã đề>) để chấm")
             .setRequired(true)
             .setAutocomplete(true),
         )
         .addAttachmentOption((o) =>
-          o.setName('file2').setDescription('Ảnh bài làm trang 2 (tùy chọn)'),
+          o.setName("file3").setDescription("Ảnh bài làm trang 3 (tùy chọn)"),
         )
         .addAttachmentOption((o) =>
-          o.setName('file3').setDescription('Ảnh bài làm trang 3 (tùy chọn)'),
+          o.setName("file4").setDescription("Ảnh bài làm trang 4 (tùy chọn)"),
         )
         .addAttachmentOption((o) =>
-          o.setName('file4').setDescription('Ảnh bài làm trang 4 (tùy chọn)'),
-        )
-        .addAttachmentOption((o) =>
-          o.setName('file5').setDescription('Ảnh bài làm trang 5 (tùy chọn)'),
+          o.setName("file5").setDescription("Ảnh bài làm trang 5 (tùy chọn)"),
         );
 
       const guild = await this.client.guilds.fetch(this.guildId);
@@ -146,21 +149,21 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
   private async handleAddQuiz(
     interaction: ChatInputCommandInteraction,
   ): Promise<void> {
-    const file = interaction.options.getAttachment('file', true);
+    const file = interaction.options.getAttachment("file", true);
     this.logger.log(
       `/add-quiz từ ${interaction.user.tag}: ${file.name} (${file.contentType})`,
     );
     await interaction.deferReply();
 
-    const mime = file.contentType?.split(';')[0] ?? '';
+    const mime = file.contentType?.split(";")[0] ?? "";
     if (!this.quiz.isSupported(mime)) {
       await interaction.editReply({
         embeds: [
           new EmbedBuilder()
             .setColor(0xe74c3c)
-            .setTitle('❌ Định dạng không hỗ trợ')
+            .setTitle("❌ Định dạng không hỗ trợ")
             .setDescription(
-              `Chỉ nhận PDF hoặc DOCX. File: ${file.name} (${mime || 'unknown'})`,
+              `Chỉ nhận PDF hoặc DOCX. File: ${file.name} (${mime || "unknown"})`,
             ),
         ],
       });
@@ -180,11 +183,11 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
             .setColor(0x2ecc71)
             .setTitle(`✅ ${result.title || result.originalName}`)
             .setDescription(
-              `Đã trích **${result.questionCount}** câu • Mã đề: **${result.examCode || '(?)'}**`,
+              `Đã trích **${result.questionCount}** câu • Mã đề: **${result.examCode || "(?)"}**`,
             )
             .addFields(
-              { name: 'File đề', value: result.originalName },
-              { name: 'Đã lưu (JSON)', value: '`' + result.savedPath + '`' },
+              { name: "File đề", value: result.originalName },
+              { name: "Đã lưu (JSON)", value: "`" + result.savedPath + "`" },
             ),
         ],
       });
@@ -194,7 +197,7 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
         embeds: [
           new EmbedBuilder()
             .setColor(0xe74c3c)
-            .setTitle('❌ Giải đề thất bại')
+            .setTitle("❌ Giải đề thất bại")
             .setDescription((err as Error).message.slice(0, 1000)),
         ],
       });
@@ -227,9 +230,7 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
         }));
       await interaction.respond(choices);
     } catch (err) {
-      this.logger.warn(
-        `Autocomplete /grading lỗi: ${(err as Error).message}`,
-      );
+      this.logger.warn(`Autocomplete /grading lỗi: ${(err as Error).message}`);
       try {
         await interaction.respond([]);
       } catch {
@@ -247,13 +248,13 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
     interaction: ChatInputCommandInteraction,
   ): Promise<void> {
     await interaction.deferReply();
-    const examCode = interaction.options.getString('exam_code', true);
+    const examCode = interaction.options.getString("exam_code", true);
 
     const images: Attachment[] = IMAGE_OPTION_NAMES.map((n) =>
       interaction.options.getAttachment(n),
     )
       .filter((a): a is Attachment => !!a)
-      .filter((a) => a.contentType?.startsWith('image/'));
+      .filter((a) => a.contentType?.startsWith("image/"));
 
     this.logger.log(
       `/grading từ ${interaction.user.tag}: mã đề=${examCode}, ${images.length} ảnh`,
@@ -264,8 +265,8 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
         embeds: [
           new EmbedBuilder()
             .setColor(0xe74c3c)
-            .setTitle('❌ Không có ảnh bài làm')
-            .setDescription('Cần ít nhất 1 ảnh (image/*) ở option `file`.'),
+            .setTitle("❌ Không có ảnh bài làm")
+            .setDescription("Cần ít nhất 1 ảnh (image/*) ở option `file`."),
         ],
       });
       return;
@@ -280,8 +281,8 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
             throw new Error(`tải ảnh ${a.name} fail HTTP ${res.status}`);
           const buf = Buffer.from(await res.arrayBuffer());
           return {
-            base64: buf.toString('base64'),
-            mime: a.contentType ?? 'image/jpeg',
+            base64: buf.toString("base64"),
+            mime: a.contentType ?? "image/jpeg",
           };
         }),
       );
@@ -289,7 +290,7 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
       const result = await this.grade.grade(examCode, loaded);
 
       // Link ảnh CDN discord (nối nhiều ảnh bằng newline).
-      const imageLinks = images.map((a) => a.url).join('\n');
+      const imageLinks = images.map((a) => a.url).join("\n");
 
       // Lazy resolve worksheet nếu boot-time verify thất bại.
       if (!this.sheetRange) {
@@ -313,26 +314,27 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
       // Đối chiếu mã đề nhập tay vs mã đề AI đọc từ ảnh.
       const codeMismatch =
         result.extractedExamCode &&
-        result.extractedExamCode.toUpperCase() !== examCode.trim().toUpperCase();
+        result.extractedExamCode.toUpperCase() !==
+          examCode.trim().toUpperCase();
 
       const embed = new EmbedBuilder()
         .setColor(0x2ecc71)
-        .setTitle(`✅ Đã chấm: ${result.fullName || '(không đọc được tên)'}`)
+        .setTitle(`✅ Đã chấm: ${result.fullName || "(không đọc được tên)"}`)
         .setDescription(`**Điểm:** ${result.score}  •  **Mã đề:** ${examCode}`)
         .addFields(
-          { name: 'Lớp', value: result.className || '-', inline: true },
-          { name: 'Bố mẹ', value: result.parentName || '-', inline: true },
-          { name: 'SĐT', value: result.parentPhone || '-', inline: true },
-          { name: 'Đáp án dùng', value: result.matchedFile },
+          { name: "Lớp", value: result.className || "-", inline: true },
+          { name: "Bố mẹ", value: result.parentName || "-", inline: true },
+          { name: "SĐT", value: result.parentPhone || "-", inline: true },
+          { name: "Đáp án dùng", value: result.matchedFile },
           {
-            name: 'Mã đề trên ảnh',
-            value: `${result.extractedExamCode || '(không đọc được)'}${
-              codeMismatch ? ' ⚠️ lệch mã đề nhập tay' : ''
+            name: "Mã đề trên ảnh",
+            value: `${result.extractedExamCode || "(không đọc được)"}${
+              codeMismatch ? " ⚠️ lệch mã đề nhập tay" : ""
             }`,
           },
         );
       if (result.note) {
-        embed.addFields({ name: 'Ghi chú', value: result.note.slice(0, 1000) });
+        embed.addFields({ name: "Ghi chú", value: result.note.slice(0, 1000) });
       }
       await interaction.editReply({ embeds: [embed] });
     } catch (err) {
@@ -341,7 +343,7 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
         embeds: [
           new EmbedBuilder()
             .setColor(0xe74c3c)
-            .setTitle('❌ Chấm bài thất bại')
+            .setTitle("❌ Chấm bài thất bại")
             .setDescription((err as Error).message.slice(0, 1000)),
         ],
       });
