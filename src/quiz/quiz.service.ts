@@ -88,13 +88,13 @@ export class QuizService {
   private async save(exam: Exam, originalName: string): Promise<string> {
     const dir = resolve(DB_DIR);
     await mkdir(dir, { recursive: true });
+    // Tên đề theo cấu trúc rcv-<mã đề>; cùng mã đề → ghi đè (cập nhật).
     const slug =
       this.slugify(exam.examCode) ||
       this.slugify(exam.title) ||
       this.slugify(originalName) ||
       'exam';
-    const ts = new Date().toISOString().replace(/[:.]/g, '-');
-    const filePath = resolve(dir, `${slug}-${ts}.json`);
+    const filePath = resolve(dir, `rcv-${slug}.json`);
     // Minify để tiết kiệm dung lượng.
     await writeFile(filePath, JSON.stringify(exam), 'utf8');
     this.logger.log(`Quiz đã lưu: ${filePath}`);

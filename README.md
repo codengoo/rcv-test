@@ -10,7 +10,7 @@ Bot server NestJS + discord.js phục vụ chấm bài thi qua **slash command**
 ## Kiến trúc
 
 ```
-/add-quiz (PDF/DOCX) ─► DiscordService ─► QuizService ─► database/<slug>.json
+/add-quiz (PDF/DOCX) ─► DiscordService ─► QuizService ─► database/rcv-<mã đề>.json
                                           (parse pdf/docx + Gemini trích cấu trúc đề)
 
 /grading (mã đề + ảnh) ─► DiscordService ─► GradeService ─► Gemini ─► info + điểm
@@ -91,7 +91,7 @@ Gõ slash command **`/add-quiz`** trong server và đính kèm file đề **PDF*
 1. `deferReply` (trích đề có thể > 3s), tải file đính kèm.
 2. PDF → gửi thẳng bytes cho Gemini (`mediaPart`); DOCX → trích text bằng `mammoth`.
 3. `gemini-2.5-flash-lite` trích cấu trúc đề theo `examSchema`, trả `{ title, examCode, questions[] }`.
-4. Lưu **JSON minified** vào `database/<slug>-<timestamp>.json`. Mỗi câu gồm `id`, `type` (`multiple_choice`/`fill_blank`/`error_correction`), `question`, `options`, `correctAnswer`, `explanation`.
+4. Lưu **JSON minified** vào `database/rcv-<mã đề>.json` (cùng mã đề → ghi đè/cập nhật). Mỗi câu gồm `id`, `type` (`multiple_choice`/`fill_blank`/`error_correction`), `question`, `options`, `correctAnswer`, `explanation`.
 5. Reply **embed**: tên đề + mã đề + số câu + tên file input + đường dẫn JSON.
 
 **Giới hạn:**
@@ -109,8 +109,10 @@ Gõ **`/grading`**, **nhập tay mã đề** và đính ảnh bài làm:
 | Option | Bắt buộc | Ý nghĩa |
 |---|---|---|
 | `file` | ✅ | Ảnh bài làm (trang 1) |
-| `exam_code` | ✅ | Mã đề (vd `A01`) — chọn file đáp án để chấm |
+| `exam_code` | ✅ | **Dropdown** chọn đề có sẵn trong `database/` (hiển thị `rcv-<mã đề>`) |
 | `file2`…`file5` | ❌ | Ảnh bài làm các trang tiếp theo (nếu nhiều trang) |
+
+> `exam_code` dùng **autocomplete**: gõ/để trống sẽ hiện danh sách đề (`rcv-A01`, …) lấy trực tiếp từ các file JSON trong `database/`.
 
 Bot:
 

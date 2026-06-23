@@ -12,6 +12,7 @@ import {
   SlashCommandBuilder,
   EmbedBuilder,
   ChatInputCommandInteraction,
+  AutocompleteInteraction,
   Attachment,
 } from 'discord.js';
 import {
@@ -59,6 +60,12 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
     });
 
     this.client.on(Events.InteractionCreate, (interaction) => {
+      if (interaction.isAutocomplete()) {
+        if (interaction.commandName === 'grading') {
+          void this.handleGradingAutocomplete(interaction);
+        }
+        return;
+      }
       if (!interaction.isChatInputCommand()) return;
       if (interaction.commandName === 'add-quiz') {
         void this.handleAddQuiz(interaction);
@@ -106,8 +113,9 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
         .addStringOption((o) =>
           o
             .setName('exam_code')
-            .setDescription('Mã đề (vd A01) — chọn đáp án để chấm')
-            .setRequired(true),
+            .setDescription('Chọn đề (rcv-<mã đề>) để chấm')
+            .setRequired(true)
+            .setAutocomplete(true),
         )
         .addAttachmentOption((o) =>
           o.setName('file2').setDescription('Ảnh bài làm trang 2 (tùy chọn)'),
@@ -190,6 +198,43 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
             .setDescription((err as Error).message.slice(0, 1000)),
         ],
       });
+    }
+  }
+
+  /**
+   * Autocomplete cho option exam_code của /grading: liệt kê đề trong database
+   * dưới dạng "rcv-<mã đề>". value gửi đi là mã đề (để GradeService khớp).
+   */
+  private async handleGradingAutocomplete(
+    interaction: AutocompleteInteraction,
+  ): Promise<void> {
+    try {
+      const focused = interaction.options.getFocused().toString().toLowerCase();
+      const exams = await this.grade.listExams();
+      const choices = exams
+        .filter((e) => {
+          const label = `rcv-${e.examCode}`.toLowerCase();
+          return (
+            !focused ||
+            label.includes(focused) ||
+            e.title.toLowerCase().includes(focused)
+          );
+        })
+        .slice(0, 25)
+        .map((e) => ({
+          name: `rcv-${e.examCode}`.slice(0, 100),
+          value: e.examCode,
+        }));
+      await interaction.respond(choices);
+    } catch (err) {
+      this.logger.warn(
+        `Autocomplete /grading lỗi: ${(err as Error).message}`,
+      );
+      try {
+        await interaction.respond([]);
+      } catch {
+        // ignore — interaction có thể đã hết hạn
+      }
     }
   }
 

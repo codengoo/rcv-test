@@ -105,6 +105,21 @@ export class GradeService {
   }
 
   /**
+   * Danh sách đề hiện có (cho dropdown /grading). Mỗi mã đề 1 mục, đã khử trùng.
+   */
+  async listExams(): Promise<{ examCode: string; title: string }[]> {
+    const keys = await this.loadAnswerKeys();
+    const seen = new Set<string>();
+    const out: { examCode: string; title: string }[] = [];
+    for (const k of keys) {
+      if (!k.examCode || seen.has(k.examCode)) continue;
+      seen.add(k.examCode);
+      out.push({ examCode: k.examCode, title: k.title });
+    }
+    return out;
+  }
+
+  /**
    * Chấm bài làm theo mã đề nhập tay: chọn đúng file đáp án, gửi đáp án tối
    * giản + ảnh cho Gemini trong MỘT lần gọi. Ném lỗi nếu không tìm thấy đề.
    */
