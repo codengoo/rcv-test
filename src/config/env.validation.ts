@@ -5,17 +5,14 @@ export class EnvironmentVariables {
   @IsString()
   DISCORD_BOT_TOKEN!: string;
 
-  @IsString()
-  DISCORD_CHANNEL_ID!: string;
-
-  // ID server (guild) để đăng ký slash command /add-quiz (task 3).
+  // ID server (guild) để đăng ký slash command /add-quiz, /cham-bai.
   @IsString()
   DISCORD_GUILD_ID!: string;
 
   @IsString()
   GOOGLE_SHEET_ID!: string;
 
-  // API key Gemini cho luồng trích xuất hóa đơn (task 2).
+  // API key Gemini cho luồng đọc/chấm bài làm + giải đề.
   @IsString()
   GEMINI_API_KEY!: string;
 
