@@ -40,7 +40,6 @@ export const gradingResultSchema = z.object({
             'Câu trả lời thí sinh (quy chuẩn): trắc nghiệm ghi chữ cái A/B/C/D, ' +
               'còn lại ghi nội dung ngắn; "" nếu bỏ trống',
           ),
-        correctAnswer: z.string().describe('Đáp án đúng theo đáp án cung cấp'),
         isCorrect: z.boolean().describe('true nếu thí sinh làm đúng câu này'),
       }),
     )

@@ -35,6 +35,21 @@ export class EnvironmentVariables {
   @IsOptional()
   @IsString()
   GOOGLE_SERVICE_ACCOUNT_FILE?: string;
+
+  // Chuỗi kết nối MongoDB (local hoặc Atlas). Nguồn dữ liệu chính cho đề + kết quả.
+  @IsString()
+  MONGODB_URI!: string;
+
+  // Cổng HTTP server (REST API + React build). Mặc định 3000.
+  @IsOptional()
+  @IsString()
+  PORT?: string;
+
+  // Base URL trang tra cứu kết quả (chèn link vào reply Discord).
+  // Mặc định https://rcv-result.nghiacn.cloud nếu bỏ trống.
+  @IsOptional()
+  @IsString()
+  RESULT_WEB_URL?: string;
 }
 
 export function validateEnv(config: Record<string, unknown>) {

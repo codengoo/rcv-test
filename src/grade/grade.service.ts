@@ -1,11 +1,7 @@
-import { readdir, readFile } from 'fs/promises';
-import { resolve } from 'path';
 import { Injectable, Logger } from '@nestjs/common';
 import { GeminiService, AiPart } from '../shared/gemini/gemini.service';
-import { gradingResultSchema, GradingResult } from './grade.schema';
-import { Exam } from '../quiz/quiz.schema';
-
-const DB_DIR = 'database';
+import { gradingResultSchema } from './grade.schema';
+import { ExamService } from '../exam/exam.service';
 
 const GRADE_PROMPT =
   'Bạn là giám khảo. Các ảnh đính kèm là BÀI LÀM của MỘT thí sinh ' +
@@ -24,25 +20,21 @@ const GRADE_PROMPT =
   '  - totalQuestions = số câu trong ĐÁP ÁN; correctCount = số câu đúng.\n\n' +
   'Thiếu thông tin nào thì để "" và ghi lý do vào note.';
 
-/** Câu hỏi tối giản dùng để chấm (không gồm nội dung đề). */
-interface MinimalQuestion {
-  id: string;
-  type: string;
-  correctAnswer: string;
-}
-
-/** Một file đáp án (.json) trong database/ đã được parse. */
-interface AnswerKey {
-  file: string;
-  title: string;
-  examCode: string;
-  questions: MinimalQuestion[];
-}
-
 /** Ảnh bài làm đã tải về dạng base64. */
 export interface GradeImage {
   base64: string;
   mime: string;
+}
+
+/** Một câu đã chấm, kèm nội dung đề join từ Exam (cho submission/FE). */
+export interface GradedQuestion {
+  id: string;
+  studentAnswer: string;
+  correctAnswer: string;
+  isCorrect: boolean;
+  question: string;
+  options: string[];
+  explanation: string;
 }
 
 /** Kết quả chấm trả ra cho caller (Discord). */
@@ -54,11 +46,12 @@ export interface GradeOutput {
   className: string;
   extractedExamCode: string; // mã đề AI đọc từ ảnh (đối chiếu)
   // Kết quả chấm.
+  examCode: string; // mã đề đã dùng để chấm (nhập tay, uppercase)
   score: string; // "9/12"
   correctCount: number;
   totalQuestions: number;
-  questions: GradingResult['questions'];
-  matchedFile: string; // file đáp án dùng để chấm
+  questions: GradedQuestion[];
+  matchedFile: string; // nguồn đáp án dùng để chấm (mô tả)
   note: string;
 }
 
@@ -66,82 +59,43 @@ export interface GradeOutput {
 export class GradeService {
   private readonly logger = new Logger(GradeService.name);
 
-  constructor(private readonly gemini: GeminiService) {}
-
-  /** Đọc toàn bộ file .json trong database/ thành danh sách đáp án tối giản. */
-  private async loadAnswerKeys(): Promise<AnswerKey[]> {
-    const dir = resolve(DB_DIR);
-    let names: string[];
-    try {
-      names = (await readdir(dir)).filter((n) =>
-        n.toLowerCase().endsWith('.json'),
-      );
-    } catch {
-      names = [];
-    }
-    const keys: AnswerKey[] = [];
-    for (const name of names) {
-      try {
-        const raw = await readFile(resolve(dir, name), 'utf8');
-        const exam = JSON.parse(raw) as Exam;
-        keys.push({
-          file: name,
-          title: exam.title ?? '',
-          examCode: (exam.examCode ?? '').toUpperCase(),
-          // Chỉ giữ id + type + correctAnswer (không tải nội dung đề).
-          questions: (exam.questions ?? []).map((q) => ({
-            id: q.id,
-            type: q.type,
-            correctAnswer: q.correctAnswer,
-          })),
-        });
-      } catch (err) {
-        this.logger.warn(
-          `Bỏ qua file đáp án lỗi "${name}": ${(err as Error).message}`,
-        );
-      }
-    }
-    return keys;
-  }
+  constructor(
+    private readonly gemini: GeminiService,
+    private readonly exams: ExamService,
+  ) {}
 
   /**
-   * Danh sách đề hiện có (cho dropdown /grading). Mỗi mã đề 1 mục, đã khử trùng.
+   * Danh sách đề hiện có (cho dropdown /grading). Đọc từ Mongo qua ExamService.
    */
   async listExams(): Promise<{ examCode: string; title: string }[]> {
-    const keys = await this.loadAnswerKeys();
-    const seen = new Set<string>();
-    const out: { examCode: string; title: string }[] = [];
-    for (const k of keys) {
-      if (!k.examCode || seen.has(k.examCode)) continue;
-      seen.add(k.examCode);
-      out.push({ examCode: k.examCode, title: k.title });
-    }
-    return out;
+    return this.exams.listExams();
   }
 
   /**
-   * Chấm bài làm theo mã đề nhập tay: chọn đúng file đáp án, gửi đáp án tối
-   * giản + ảnh cho Gemini trong MỘT lần gọi. Ném lỗi nếu không tìm thấy đề.
+   * Chấm bài làm theo mã đề nhập tay: lấy đề từ Mongo, gửi đáp án tối giản +
+   * ảnh cho Gemini trong MỘT lần gọi, rồi join nội dung đề (question/options/
+   * explanation) vào từng câu đã chấm. Ném lỗi nếu không tìm thấy đề.
    */
   async grade(examCode: string, images: GradeImage[]): Promise<GradeOutput> {
     const wanted = examCode.trim().toUpperCase();
-    const keys = await this.loadAnswerKeys();
-    if (keys.length === 0) {
+    const exam = await this.exams.findForGrading(wanted);
+    if (!exam) {
+      const available = (await this.exams.listExams())
+        .map((e) => e.examCode || '(?)')
+        .join(', ');
       throw new Error(
-        'Chưa có đáp án (.json) nào trong database/. Dùng /add-quiz tạo đề trước khi chấm.',
-      );
-    }
-
-    const key = keys.find((k) => k.examCode === wanted);
-    if (!key) {
-      const available = keys.map((k) => k.examCode || '(?)').join(', ');
-      throw new Error(
-        `Không tìm thấy đề mã "${examCode}". Mã đề hiện có: ${available}.`,
+        `Không tìm thấy đề mã "${examCode}". Mã đề hiện có: ${available || '(trống)'}.`,
       );
     }
 
     // Đáp án tối giản (minify): chỉ id + type + correctAnswer.
-    const answerKeyJson = JSON.stringify(key.questions);
+    const answerKeyJson = JSON.stringify(
+      exam.questions.map((q) => ({
+        id: q.id,
+        type: q.type,
+        correctAnswer: q.correctAnswer,
+      })),
+    );
 
     // filePart nhận Buffer; GeminiService tự quyết định upload File API (ảnh
     // > 2MB) hay nhúng inline, và tự dọn asset sau khi chấm xong.
@@ -151,24 +105,39 @@ export class GradeService {
         this.gemini.filePart(
           Buffer.from(img.base64, 'base64'),
           img.mime,
-          `grade-${key.examCode}-${i}`,
+          `grade-${exam.examCode}-${i}`,
         ),
       ),
     ];
 
     this.logger.log(
-      `Chấm mã đề ${key.examCode} (file ${key.file}): ${images.length} ảnh, ${key.questions.length} câu, gọi Gemini...`,
+      `Chấm mã đề ${exam.examCode} (Mongo): ${images.length} ảnh, ${exam.questions.length} câu, gọi Gemini...`,
     );
     const result = await this.gemini.extractStructured(
       gradingResultSchema,
       parts,
-      { name: 'grading' },
+      { name: 'grading', thinkingBudget: 0 },
     );
+
+    // Join nội dung đề vào từng câu đã chấm (theo id) cho submission/FE.
+    const byId = new Map(exam.questions.map((q) => [q.id, q]));
+    const questions: GradedQuestion[] = result.questions.map((q) => {
+      const src = byId.get(q.id);
+      return {
+        id: q.id,
+        studentAnswer: q.studentAnswer,
+        correctAnswer: src?.correctAnswer ?? '',
+        isCorrect: q.isCorrect,
+        question: src?.question ?? '',
+        options: src?.options ?? [],
+        explanation: src?.explanation ?? '',
+      };
+    });
 
     const score = `${result.correctCount}/${result.totalQuestions}`;
     this.logger.log(
       `Chấm xong: thí sinh="${result.fullName}" lớp="${result.className}" ` +
-        `mã đề ảnh=${result.examCode} (nhập tay=${key.examCode}) điểm=${score}`,
+        `mã đề ảnh=${result.examCode} (nhập tay=${exam.examCode}) điểm=${score}`,
     );
 
     return {
@@ -177,11 +146,12 @@ export class GradeService {
       parentPhone: result.parentPhone,
       className: result.className,
       extractedExamCode: result.examCode,
+      examCode: exam.examCode,
       score,
       correctCount: result.correctCount,
       totalQuestions: result.totalQuestions,
-      questions: result.questions,
-      matchedFile: key.file,
+      questions,
+      matchedFile: `mongo:exams/${exam.examCode}`,
       note: result.note,
     };
   }

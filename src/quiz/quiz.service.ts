@@ -3,6 +3,7 @@ import { resolve } from 'path';
 import { Injectable, Logger } from '@nestjs/common';
 import * as mammoth from 'mammoth';
 import { GeminiService, AiPart } from '../shared/gemini/gemini.service';
+import { ExamService } from '../exam/exam.service';
 import { examSchema, Exam } from './quiz.schema';
 
 const DB_DIR = 'database';
@@ -39,8 +40,8 @@ export interface QuizResult {
   title: string;
   examCode: string;
   questionCount: number;
-  savedPath: string; // file .json (đáp án để chấm)
-  mdPath: string; // file .md (bản giải gốc)
+  savedPath: string; // mô tả nơi lưu đáp án (Mongo: "mongo:exams/<examCode>")
+  mdPath: string; // file .md (bản giải gốc, giữ để debug)
   originalName: string;
 }
 
@@ -48,7 +49,10 @@ export interface QuizResult {
 export class QuizService {
   private readonly logger = new Logger(QuizService.name);
 
-  constructor(private readonly gemini: GeminiService) {}
+  constructor(
+    private readonly gemini: GeminiService,
+    private readonly exams: ExamService,
+  ) {}
 
   /** true nếu mime được hỗ trợ (pdf/docx). */
   isSupported(mimeType: string): boolean {
@@ -84,11 +88,12 @@ export class QuizService {
       throw new Error(`Định dạng không hỗ trợ: ${mimeType}`);
     }
 
-    // 2) AI giải đề → Markdown.
-    const md = await this.gemini.generateText([
-      this.gemini.textPart(QUIZ_MD_PROMPT),
-      inputPart,
-    ]);
+    // 2) AI giải đề → Markdown. thinkingBudget=-1: BẬT thinking (dynamic) vì
+    // giải đề cần suy luận để ra đáp án đúng (chấp nhận chậm hơn, ít khi chạy).
+    const md = await this.gemini.generateText(
+      [this.gemini.textPart(QUIZ_MD_PROMPT), inputPart],
+      { thinkingBudget: -1 },
+    );
     const mdPath = await this.saveMarkdown(md, originalName);
 
     // 3) Convert Markdown → Exam (thuần regex) và lưu .json để chấm.
@@ -108,20 +113,26 @@ export class QuizService {
     };
   }
 
+  /**
+   * Lưu đề vào MongoDB (upsert theo examCode) — Mongo là nguồn dữ liệu chính.
+   * Trả về mô tả vị trí lưu để hiển thị trong embed Discord.
+   */
   private async save(exam: Exam, originalName: string): Promise<string> {
-    const dir = resolve(DB_DIR);
-    await mkdir(dir, { recursive: true });
-    // Tên đề theo cấu trúc rcv-<mã đề>; cùng mã đề → ghi đè (cập nhật).
-    const slug =
-      this.slugify(exam.examCode) ||
-      this.slugify(exam.title) ||
-      this.slugify(originalName) ||
-      'exam';
-    const filePath = resolve(dir, `rcv-${slug}.json`);
-    // Minify để tiết kiệm dung lượng.
-    await writeFile(filePath, JSON.stringify(exam), 'utf8');
-    this.logger.log(`Quiz đã lưu: ${filePath}`);
-    return filePath;
+    const code = (exam.examCode || '').trim().toUpperCase();
+    if (!code) {
+      throw new Error(
+        `Đề "${exam.title || originalName}" không có mã đề (examCode). ` +
+          'Hãy bổ sung dòng "Mã đề: ..." trong đề để lưu được vào hệ thống.',
+      );
+    }
+    await this.exams.upsertByExamCode({
+      examCode: code,
+      title: exam.title,
+      questions: exam.questions,
+    });
+    const where = `mongo:exams/${code}`;
+    this.logger.log(`Quiz đã lưu vào Mongo: ${where}`);
+    return where;
   }
 
   /** Lưu Markdown (test) vào database/ với tên rcv-<slug tên file>.md. */

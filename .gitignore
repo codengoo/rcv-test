@@ -4,3 +4,7 @@ dist/
 service-account.json
 *.log
 database/
+
+# React FE (web/) — build + deps không commit
+web/node_modules/
+web/dist/

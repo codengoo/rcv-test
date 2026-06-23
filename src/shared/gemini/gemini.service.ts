@@ -211,19 +211,27 @@ export class GeminiService {
     }
   }
 
-  private getLlm(model: string): ChatGoogleGenerativeAI {
-    const cached = this.llmCache.get(model);
+  private getLlm(
+    model: string,
+    thinkingBudget?: number,
+  ): ChatGoogleGenerativeAI {
+    const key = `${model}:${thinkingBudget ?? 'default'}`;
+    const cached = this.llmCache.get(key);
     if (cached) return cached;
     const apiKey = this.config.getOrThrow<string>('GEMINI_API_KEY');
     // maxOutputTokens cao: đề thi giải đầy đủ + lời giải → JSON rất dài,
     // mặc định thấp khiến output bị cắt giữa chừng (Unterminated string).
+    // thinkingBudget=0 → tắt "thinking" để giảm mạnh latency (caller tự chọn).
     const llm = new ChatGoogleGenerativeAI({
       model,
       apiKey,
       temperature: 0,
       maxOutputTokens: 65536,
+      ...(thinkingBudget !== undefined
+        ? { thinkingConfig: { thinkingBudget } }
+        : {}),
     });
-    this.llmCache.set(model, llm);
+    this.llmCache.set(key, llm);
     return llm;
   }
 
@@ -248,14 +256,21 @@ export class GeminiService {
   async extractStructured<T>(
     schema: z.ZodType<T>,
     parts: AiPart[],
-    opts?: { model?: string; name?: string; upload?: UploadMode },
+    opts?: {
+      model?: string;
+      name?: string;
+      upload?: UploadMode;
+      thinkingBudget?: number;
+    },
   ): Promise<T> {
     const model = opts?.model ?? DEFAULT_MODEL;
     const name = opts?.name ?? 'output';
     return this.runWithParts(parts, opts?.upload, async (resolved) => {
       // cast any: tránh deep type instantiation của withStructuredOutput + zod.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const structured = (this.getLlm(model) as any).withStructuredOutput(
+      const structured = (
+        this.getLlm(model, opts?.thinkingBudget) as any
+      ).withStructuredOutput(
         schema,
         { name },
       );
@@ -277,11 +292,11 @@ export class GeminiService {
    */
   async generateText(
     parts: AiPart[],
-    opts?: { model?: string; upload?: UploadMode },
+    opts?: { model?: string; upload?: UploadMode; thinkingBudget?: number },
   ): Promise<string> {
     const model = opts?.model ?? DEFAULT_MODEL;
     return this.runWithParts(parts, opts?.upload, async (resolved) => {
-      const llm = this.getLlm(model);
+      const llm = this.getLlm(model, opts?.thinkingBudget);
       const message = new HumanMessage({ content: this.toContent(resolved) });
 
       this.logger.log(`Gọi ${model} text (${resolved.length} part)...`);

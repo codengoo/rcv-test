@@ -4,9 +4,16 @@ import { GoogleSheetsModule } from '../shared/google-sheets/google-sheets.module
 import { GoogleDriveModule } from '../shared/google-drive/google-drive.module';
 import { QuizModule } from '../quiz/quiz.module';
 import { GradeModule } from '../grade/grade.module';
+import { SubmissionModule } from '../submission/submission.module';
 
 @Module({
-  imports: [GoogleSheetsModule, GoogleDriveModule, QuizModule, GradeModule],
+  imports: [
+    GoogleSheetsModule,
+    GoogleDriveModule,
+    QuizModule,
+    GradeModule,
+    SubmissionModule,
+  ],
   providers: [DiscordService],
 })
 export class DiscordModule {}

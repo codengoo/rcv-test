@@ -22,8 +22,28 @@ import {
 import { GoogleDriveService } from "../shared/google-drive/google-drive.service";
 import { QuizService } from "../quiz/quiz.service";
 import { GradeService, GradeImage } from "../grade/grade.service";
+import { SubmissionService } from "../submission/submission.service";
+import sharp from "sharp";
+
+/** Ảnh đã upload Drive: giữ fileId (FE dựng URL) + link (ghi Sheet). */
+interface UploadedImage {
+  fileId: string;
+  link: string;
+}
+
+/** Ảnh đã tải + nén, sẵn sàng cho cả Gemini lẫn Drive. */
+interface PreparedImage {
+  buf: Buffer;
+  mime: string;
+  ext: string;
+}
 
 const IMAGE_OPTION_NAMES = ["file", "file2", "file3", "file4", "file5"];
+
+// Nén ảnh trước khi gửi: ≤ 2000px / JPEG q82 → thường < 2MB nên Gemini nhúng
+// inline (bỏ File API ~8-10s) + vision nhanh hơn, vẫn đủ nét cho OCR chữ viết tay.
+const MAX_IMAGE_DIM = 2000;
+const JPEG_QUALITY = 82;
 
 // mime ảnh → đuôi file (đặt tên file trên Drive).
 const EXT_BY_MIME: Record<string, string> = {
@@ -41,6 +61,7 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
   private readonly sheetId: string;
   private readonly guildId: string;
   private readonly driveFolderId: string;
+  private readonly resultWebUrl: string;
   private sheetRange = "";
 
   constructor(
@@ -49,12 +70,18 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
     private readonly drive: GoogleDriveService,
     private readonly quiz: QuizService,
     private readonly grade: GradeService,
+    private readonly submissions: SubmissionService,
   ) {
     this.sheetId = this.config.getOrThrow<string>("GOOGLE_SHEET_ID");
     this.guildId = this.config.getOrThrow<string>("DISCORD_GUILD_ID");
     this.driveFolderId = this.config.getOrThrow<string>(
       "GOOGLE_DRIVE_FOLDER_ID",
     );
+    // Base URL trang tra cứu kết quả (để chèn link vào reply). Có thể override
+    // qua env RESULT_WEB_URL; mặc định domain production.
+    this.resultWebUrl =
+      this.config.get<string>("RESULT_WEB_URL") ??
+      "https://rcv-result.nghiacn.cloud";
     // Chỉ cần Guilds (slash command). Không đọc nội dung message nữa.
     this.client = new Client({ intents: [GatewayIntentBits.Guilds] });
   }
@@ -263,6 +290,7 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
   private async handleGrade(
     interaction: ChatInputCommandInteraction,
   ): Promise<void> {
+    const t0 = Date.now();
     await interaction.deferReply();
     const examCode = interaction.options.getString("exam_code", true);
 
@@ -289,21 +317,26 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      // Tải ảnh về buffer → upload Drive (CDN Discord hết hạn) + base64 cho Gemini.
-      const { loaded, links } = await this.uploadImagesToDrive(
-        images,
-        examCode,
-      );
+      // 1) Tải + nén ảnh (song song) — 1 buffer dùng cho cả Gemini lẫn Drive.
+      const prepared = await this.prepareImages(images);
+      const gradeImages: GradeImage[] = prepared.map((p) => ({
+        base64: p.buf.toString("base64"),
+        mime: p.mime,
+      }));
 
-      const result = await this.grade.grade(examCode, loaded);
-
-      // Link Drive (nối nhiều ảnh bằng newline) — ghi vào Sheet.
-      const imageLinks = links.join("\n");
-
-      // Lazy resolve worksheet nếu boot-time verify thất bại.
+      // Resolve worksheet sớm nếu boot-time verify thất bại.
       if (!this.sheetRange) {
         this.sheetRange = await this.sheets.getFirstSheetTitle(this.sheetId);
       }
+
+      // 2) CHẤM (Gemini) và UPLOAD DRIVE chạy SONG SONG — 2 việc nặng nhất.
+      const [result, uploaded] = await Promise.all([
+        this.grade.grade(examCode, gradeImages),
+        this.uploadAllToDrive(prepared, examCode),
+      ]);
+
+      // Link Drive (nối nhiều ảnh bằng newline) — ghi vào Sheet.
+      const imageLinks = uploaded.map((u) => u.link).join("\n");
 
       // Cột A→F = thông tin AI trích + điểm + link ảnh.
       const row: CellValue[] = [
@@ -314,10 +347,43 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
         result.score,
         imageLinks,
       ];
-      await this.sheets.appendRow(this.sheetId, this.sheetRange, row);
-      this.logger.log(
-        `✅ Đã ghi điểm "${result.fullName}" ${result.score} (mã đề ${examCode}) vào sheet`,
-      );
+
+      // 3) Ghi Sheet + lưu Mongo SONG SONG (Mongo best-effort, không chặn).
+      const [, submission] = await Promise.all([
+        this.sheets.appendRow(this.sheetId, this.sheetRange, row).then(() => {
+          this.logger.log(
+            `✅ Đã ghi điểm "${result.fullName}" ${result.score} (mã đề ${examCode}) vào sheet`,
+          );
+        }),
+        this.submissions
+          .create({
+            examCode: result.examCode,
+            fullName: result.fullName,
+            parentName: result.parentName,
+            parentPhone: result.parentPhone,
+            className: result.className,
+            dob: "", // không dùng cho accessCode (giờ là 6 số cuối SĐT)
+            score: result.score,
+            correctCount: result.correctCount,
+            totalQuestions: result.totalQuestions,
+            questions: result.questions,
+            images: uploaded,
+            note: result.note,
+          })
+          .catch((err: Error) => {
+            this.logger.warn(
+              `Lưu submission vào Mongo thất bại (bài chấm vẫn OK): ${err.message}`,
+            );
+            return null;
+          }),
+      ]);
+
+      // Thời gian xử lý + link xem chi tiết trên web (nếu lưu Mongo thành công).
+      const elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
+      const resultId = submission?._id?.toString() ?? "";
+      const resultLink = resultId
+        ? `${this.resultWebUrl}?result_id=${resultId}`
+        : "";
 
       // Đối chiếu mã đề nhập tay vs mã đề AI đọc từ ảnh.
       const codeMismatch =
@@ -340,7 +406,11 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
               codeMismatch ? " ⚠️ lệch mã đề nhập tay" : ""
             }`,
           },
+          { name: "⏱️ Thời gian xử lý", value: `${elapsedSec}s`, inline: true },
         );
+      if (resultLink) {
+        embed.addFields({ name: "🔗 Xem chi tiết", value: resultLink });
+      }
       // Chi tiết từng câu: đáp án thí sinh + đúng/sai (kèm đáp án đúng nếu sai).
       // Discord giới hạn 1024 ký tự/field → chia thành nhiều field nếu đề dài.
       const detailLines = result.questions.map((q) => {
@@ -392,38 +462,69 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Tải các ảnh bài làm từ CDN Discord về buffer, UPLOAD lên folder Drive (vì
-   * link CDN hết hạn), đồng thời trả base64 cho Gemini và link Drive đã upload.
+   * Tải các ảnh từ CDN Discord (SONG SONG) và NÉN bằng sharp xuống ≤ 2000px /
+   * JPEG q82 — nhỏ < 2MB để Gemini nhúng inline (bỏ File API) + vision nhanh hơn,
+   * vẫn đủ nét cho OCR. Lỗi nén 1 ảnh → fallback dùng buffer gốc.
    */
-  private async uploadImagesToDrive(
+  private async prepareImages(
     images: Attachment[],
+  ): Promise<PreparedImage[]> {
+    return Promise.all(
+      images.map(async (a) => {
+        const res = await fetch(a.proxyURL);
+        if (!res.ok)
+          throw new Error(`tải ảnh ${a.name} fail HTTP ${res.status}`);
+        const raw = Buffer.from(await res.arrayBuffer());
+        try {
+          const buf = await sharp(raw)
+            .rotate() // tự xoay theo EXIF (ảnh chụp điện thoại)
+            .resize({
+              width: MAX_IMAGE_DIM,
+              height: MAX_IMAGE_DIM,
+              fit: "inside",
+              withoutEnlargement: true,
+            })
+            .jpeg({ quality: JPEG_QUALITY })
+            .toBuffer();
+          return { buf, mime: "image/jpeg", ext: "jpg" };
+        } catch (err) {
+          this.logger.warn(
+            `Nén ảnh ${a.name} lỗi, dùng ảnh gốc: ${(err as Error).message}`,
+          );
+          const mime = a.contentType?.split(";")[0] ?? "image/jpeg";
+          const ext =
+            EXT_BY_MIME[mime] ??
+            a.name.split(".").pop()?.toLowerCase() ??
+            "jpg";
+          return { buf: raw, mime, ext };
+        }
+      }),
+    );
+  }
+
+  /**
+   * Upload các ảnh đã nén lên folder Drive SONG SONG (link CDN Discord hết hạn).
+   */
+  private async uploadAllToDrive(
+    prepared: PreparedImage[],
     examCode: string,
-  ): Promise<{ loaded: GradeImage[]; links: string[] }> {
+  ): Promise<UploadedImage[]> {
     const stamp = Date.now();
     const slug =
       examCode.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-") || "exam";
-
-    const loaded: GradeImage[] = [];
-    const links: string[] = [];
-    for (let i = 0; i < images.length; i++) {
-      const a = images[i];
-      const res = await fetch(a.proxyURL);
-      if (!res.ok) throw new Error(`tải ảnh ${a.name} fail HTTP ${res.status}`);
-      const buf = Buffer.from(await res.arrayBuffer());
-      const mime = a.contentType?.split(";")[0] ?? "image/jpeg";
-      const ext =
-        EXT_BY_MIME[mime] ?? a.name.split(".").pop()?.toLowerCase() ?? "jpg";
-      const name = `rcv-${slug}-${stamp}-${i + 1}.${ext}`;
-      const up = await this.drive.uploadFile(
-        this.driveFolderId,
-        name,
-        mime,
-        buf,
-      );
-      loaded.push({ base64: buf.toString("base64"), mime });
-      links.push(up.link);
-    }
-    this.logger.log(`Đã upload ${links.length} ảnh bài làm lên Drive`);
-    return { loaded, links };
+    const uploaded = await Promise.all(
+      prepared.map(async (p, i) => {
+        const name = `rcv-${slug}-${stamp}-${i + 1}.${p.ext}`;
+        const up = await this.drive.uploadFile(
+          this.driveFolderId,
+          name,
+          p.mime,
+          p.buf,
+        );
+        return { fileId: up.id, link: up.link };
+      }),
+    );
+    this.logger.log(`Đã upload ${uploaded.length} ảnh bài làm lên Drive`);
+    return uploaded;
   }
 }
