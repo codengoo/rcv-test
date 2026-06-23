@@ -90,7 +90,8 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
             .setRequired(true),
         );
 
-      // Chỉ nhận ảnh; AI tự đọc thông tin thí sinh + mã đề + câu trả lời.
+      // Nhập tay mã đề (chọn file đáp án) + ảnh; AI đọc thông tin thí sinh,
+      // mã đề (đối chiếu) và câu trả lời.
       const grading = new SlashCommandBuilder()
         .setName('grading')
         .setDescription(
@@ -100,6 +101,12 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
           o
             .setName('file')
             .setDescription('Ảnh bài làm (trang 1)')
+            .setRequired(true),
+        )
+        .addStringOption((o) =>
+          o
+            .setName('exam_code')
+            .setDescription('Mã đề (vd A01) — chọn đáp án để chấm')
             .setRequired(true),
         )
         .addAttachmentOption((o) =>
@@ -164,10 +171,12 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
           new EmbedBuilder()
             .setColor(0x2ecc71)
             .setTitle(`✅ ${result.title || result.originalName}`)
-            .setDescription(`Đã giải **${result.questionCount}** câu`)
+            .setDescription(
+              `Đã trích **${result.questionCount}** câu • Mã đề: **${result.examCode || '(?)'}**`,
+            )
             .addFields(
               { name: 'File đề', value: result.originalName },
-              { name: 'Đã lưu', value: '`' + result.savedPath + '`' },
+              { name: 'Đã lưu (JSON)', value: '`' + result.savedPath + '`' },
             ),
         ],
       });
@@ -193,6 +202,7 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
     interaction: ChatInputCommandInteraction,
   ): Promise<void> {
     await interaction.deferReply();
+    const examCode = interaction.options.getString('exam_code', true);
 
     const images: Attachment[] = IMAGE_OPTION_NAMES.map((n) =>
       interaction.options.getAttachment(n),
@@ -201,7 +211,7 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
       .filter((a) => a.contentType?.startsWith('image/'));
 
     this.logger.log(
-      `/grading từ ${interaction.user.tag}: ${images.length} ảnh`,
+      `/grading từ ${interaction.user.tag}: mã đề=${examCode}, ${images.length} ảnh`,
     );
 
     if (images.length === 0) {
@@ -231,7 +241,7 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
         }),
       );
 
-      const result = await this.grade.grade(loaded);
+      const result = await this.grade.grade(examCode, loaded);
 
       // Link ảnh CDN discord (nối nhiều ảnh bằng newline).
       const imageLinks = images.map((a) => a.url).join('\n');
@@ -243,31 +253,37 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
 
       // Cột A→F = thông tin AI trích + điểm + link ảnh.
       const row: CellValue[] = [
-        result.hoTen,
-        result.boMe,
-        result.sdtBoMe,
-        result.lop,
+        result.fullName,
+        result.parentName,
+        result.parentPhone,
+        result.className,
         result.score,
         imageLinks,
       ];
       await this.sheets.appendRow(this.sheetId, this.sheetRange, row);
       this.logger.log(
-        `✅ Đã ghi điểm "${result.hoTen}" ${result.score} (mã đề ${result.maDe}) vào sheet`,
+        `✅ Đã ghi điểm "${result.fullName}" ${result.score} (mã đề ${examCode}) vào sheet`,
       );
+
+      // Đối chiếu mã đề nhập tay vs mã đề AI đọc từ ảnh.
+      const codeMismatch =
+        result.extractedExamCode &&
+        result.extractedExamCode.toUpperCase() !== examCode.trim().toUpperCase();
 
       const embed = new EmbedBuilder()
         .setColor(0x2ecc71)
-        .setTitle(`✅ Đã chấm: ${result.hoTen || '(không đọc được tên)'}`)
-        .setDescription(
-          `**Điểm:** ${result.score}  •  **Mã đề:** ${result.maDe || '(không đọc được)'}`,
-        )
+        .setTitle(`✅ Đã chấm: ${result.fullName || '(không đọc được tên)'}`)
+        .setDescription(`**Điểm:** ${result.score}  •  **Mã đề:** ${examCode}`)
         .addFields(
-          { name: 'Lớp', value: result.lop || '-', inline: true },
-          { name: 'Bố mẹ', value: result.boMe || '-', inline: true },
-          { name: 'SĐT', value: result.sdtBoMe || '-', inline: true },
+          { name: 'Lớp', value: result.className || '-', inline: true },
+          { name: 'Bố mẹ', value: result.parentName || '-', inline: true },
+          { name: 'SĐT', value: result.parentPhone || '-', inline: true },
+          { name: 'Đáp án dùng', value: result.matchedFile },
           {
-            name: 'Đáp án dùng',
-            value: result.matchedFile || '(AI chọn đề gần nhất)',
+            name: 'Mã đề trên ảnh',
+            value: `${result.extractedExamCode || '(không đọc được)'}${
+              codeMismatch ? ' ⚠️ lệch mã đề nhập tay' : ''
+            }`,
           },
         );
       if (result.note) {

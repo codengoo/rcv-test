@@ -2,35 +2,41 @@ import { readdir, readFile } from 'fs/promises';
 import { resolve } from 'path';
 import { Injectable, Logger } from '@nestjs/common';
 import { GeminiService, AiPart } from '../shared/gemini/gemini.service';
-import { gradeResultSchema, GradeResult } from './grade.schema';
+import { gradingResultSchema, GradingResult } from './grade.schema';
+import { Exam } from '../quiz/quiz.schema';
 
 const DB_DIR = 'database';
 
 const GRADE_PROMPT =
   'Bạn là giám khảo. Các ảnh đính kèm là BÀI LÀM của MỘT thí sinh ' +
-  '(có thể nhiều trang/nhiều ảnh — đọc TẤT CẢ).\n\n' +
-  'BƯỚC 1 — TRÍCH XUẤT (quy chuẩn) thông tin từ ảnh:\n' +
-  '  - hoTen: họ tên thí sinh.\n' +
-  '  - boMe: tên bố/mẹ (phụ huynh).\n' +
-  '  - sdtBoMe: số điện thoại bố/mẹ (CHỈ giữ chữ số).\n' +
-  '  - lop: lớp.\n' +
-  '  - maDe: mã đề ghi trên bài làm.\n' +
-  '  - câu trả lời từng câu (quy chuẩn: trắc nghiệm ghi chữ cái A/B/C/D in hoa; ' +
-  'tự luận ghi nội dung ngắn gọn).\n\n' +
-  'BƯỚC 2 — ĐỐI CHIẾU & CHẤM:\n' +
-  '  - Trong KHO ĐÁP ÁN bên dưới, chọn đề có MÃ ĐỀ trùng với maDe vừa đọc.\n' +
-  '  - So câu trả lời thí sinh với đáp án đúng + chỉ dẫn chấm; mỗi câu đúng 1 điểm.\n' +
-  '  - Điền perQuestion {cau, dapAnChon (câu trả lời thí sinh), dapAnDung, dung}, ' +
-  'totalQuestions (tổng số câu của đề đó), correctCount (số câu đúng).\n\n' +
-  'Thiếu thông tin nào thì để "" và ghi lý do vào note. Nếu không đọc được mã đề ' +
-  'hoặc không có đề khớp, chọn đề phù hợp nhất, vẫn chấm và ghi lý do vào note.';
+  '(có thể nhiều trang/nhiều ảnh — đọc TẤT CẢ). Bạn được cung cấp ĐÁP ÁN của ' +
+  'đề (danh sách: id câu, loại câu, đáp án đúng) ở phần ĐÁP ÁN bên dưới.\n\n' +
+  'BƯỚC 1 — TRÍCH XUẤT thông tin thí sinh từ ảnh (quy chuẩn):\n' +
+  '  - fullName: họ tên thí sinh.\n' +
+  '  - parentName: tên bố/mẹ.\n' +
+  '  - parentPhone: số điện thoại bố/mẹ (CHỈ giữ chữ số).\n' +
+  '  - className: lớp.\n' +
+  '  - examCode: mã đề ghi trên bài làm.\n\n' +
+  'BƯỚC 2 — CHẤM:\n' +
+  '  - Với mỗi câu theo id trong ĐÁP ÁN, đọc câu trả lời thí sinh trên ảnh ' +
+  '(studentAnswer, quy chuẩn: trắc nghiệm ghi chữ cái A/B/C/D in hoa).\n' +
+  '  - So studentAnswer với correctAnswer; đúng → isCorrect=true, mỗi câu 1 điểm.\n' +
+  '  - totalQuestions = số câu trong ĐÁP ÁN; correctCount = số câu đúng.\n\n' +
+  'Thiếu thông tin nào thì để "" và ghi lý do vào note.';
 
-/** Một file đáp án trong database/ đã được parse. */
+/** Câu hỏi tối giản dùng để chấm (không gồm nội dung đề). */
+interface MinimalQuestion {
+  id: string;
+  type: string;
+  correctAnswer: string;
+}
+
+/** Một file đáp án (.json) trong database/ đã được parse. */
 interface AnswerKey {
   file: string;
-  maDe: string;
   title: string;
-  content: string;
+  examCode: string;
+  questions: MinimalQuestion[];
 }
 
 /** Ảnh bài làm đã tải về dạng base64. */
@@ -42,17 +48,17 @@ export interface GradeImage {
 /** Kết quả chấm trả ra cho caller (Discord). */
 export interface GradeOutput {
   // Thông tin thí sinh trích từ ảnh.
-  hoTen: string;
-  boMe: string;
-  sdtBoMe: string;
-  lop: string;
-  maDe: string;
+  fullName: string;
+  parentName: string;
+  parentPhone: string;
+  className: string;
+  extractedExamCode: string; // mã đề AI đọc từ ảnh (đối chiếu)
   // Kết quả chấm.
   score: string; // "9/12"
   correctCount: number;
   totalQuestions: number;
-  perQuestion: GradeResult['perQuestion'];
-  matchedFile: string; // file đáp án khớp mã đề; "" nếu không khớp
+  questions: GradingResult['questions'];
+  matchedFile: string; // file đáp án dùng để chấm
   note: string;
 }
 
@@ -62,94 +68,97 @@ export class GradeService {
 
   constructor(private readonly gemini: GeminiService) {}
 
-  /** Đọc toàn bộ file .md trong database/ thành danh sách đáp án. */
+  /** Đọc toàn bộ file .json trong database/ thành danh sách đáp án tối giản. */
   private async loadAnswerKeys(): Promise<AnswerKey[]> {
     const dir = resolve(DB_DIR);
     let names: string[];
     try {
       names = (await readdir(dir)).filter((n) =>
-        n.toLowerCase().endsWith('.md'),
+        n.toLowerCase().endsWith('.json'),
       );
     } catch {
       names = [];
     }
     const keys: AnswerKey[] = [];
     for (const name of names) {
-      const content = await readFile(resolve(dir, name), 'utf8');
-      keys.push({
-        file: name,
-        maDe: this.parseMaDe(content) || name,
-        title: this.parseTitle(content) || name,
-        content,
-      });
+      try {
+        const raw = await readFile(resolve(dir, name), 'utf8');
+        const exam = JSON.parse(raw) as Exam;
+        keys.push({
+          file: name,
+          title: exam.title ?? '',
+          examCode: (exam.examCode ?? '').toUpperCase(),
+          // Chỉ giữ id + type + correctAnswer (không tải nội dung đề).
+          questions: (exam.questions ?? []).map((q) => ({
+            id: q.id,
+            type: q.type,
+            correctAnswer: q.correctAnswer,
+          })),
+        });
+      } catch (err) {
+        this.logger.warn(
+          `Bỏ qua file đáp án lỗi "${name}": ${(err as Error).message}`,
+        );
+      }
     }
     return keys;
   }
 
-  private parseMaDe(content: string): string {
-    const m = content.match(/M[ãa]\s*đề\s*[:\-]?\s*([A-Za-z0-9]+)/i);
-    return m ? m[1].toUpperCase() : '';
-  }
-
-  private parseTitle(content: string): string {
-    const m = content.match(/^#\s+(.+)$/m);
-    return m ? m[1].trim() : '';
-  }
-
   /**
-   * Chấm bài làm: nạp đáp án, gọi Gemini đọc ảnh + tự nhận mã đề + chấm.
-   * Ném lỗi nếu database/ chưa có đáp án nào.
+   * Chấm bài làm theo mã đề nhập tay: chọn đúng file đáp án, gửi đáp án tối
+   * giản + ảnh cho Gemini trong MỘT lần gọi. Ném lỗi nếu không tìm thấy đề.
    */
-  async grade(images: GradeImage[]): Promise<GradeOutput> {
+  async grade(examCode: string, images: GradeImage[]): Promise<GradeOutput> {
+    const wanted = examCode.trim().toUpperCase();
     const keys = await this.loadAnswerKeys();
-    console.log(keys);
-    
     if (keys.length === 0) {
       throw new Error(
-        'Chưa có đáp án nào trong database/. Dùng /add-quiz tạo đề trước khi chấm.',
+        'Chưa có đáp án (.json) nào trong database/. Dùng /add-quiz tạo đề trước khi chấm.',
       );
     }
 
-    const keysBlock = keys
-      .map((k) => `### MÃ ĐỀ: ${k.maDe} (file: ${k.file})\n${k.content}`)
-      .join('\n\n---\n\n');
+    const key = keys.find((k) => k.examCode === wanted);
+    if (!key) {
+      const available = keys.map((k) => k.examCode || '(?)').join(', ');
+      throw new Error(
+        `Không tìm thấy đề mã "${examCode}". Mã đề hiện có: ${available}.`,
+      );
+    }
+
+    // Đáp án tối giản (minify): chỉ id + type + correctAnswer.
+    const answerKeyJson = JSON.stringify(key.questions);
 
     const parts: AiPart[] = [
-      this.gemini.textPart(
-        `${GRADE_PROMPT}\n\n=== KHO ĐÁP ÁN ===\n${keysBlock}`,
-      ),
+      this.gemini.textPart(`${GRADE_PROMPT}\n\n=== ĐÁP ÁN ===\n${answerKeyJson}`),
       ...images.map((img) => this.gemini.imagePart(img.base64, img.mime)),
     ];
 
     this.logger.log(
-      `Chấm: ${images.length} ảnh, ${keys.length} đề trong kho, gọi Gemini...`,
+      `Chấm mã đề ${key.examCode} (file ${key.file}): ${images.length} ảnh, ${key.questions.length} câu, gọi Gemini...`,
     );
     const result = await this.gemini.extractStructured(
-      gradeResultSchema,
+      gradingResultSchema,
       parts,
-      { name: 'grade' },
+      { name: 'grading' },
     );
 
-    const matched = keys.find(
-      (k) => k.maDe === (result.maDe || '').toUpperCase(),
-    );
     const score = `${result.correctCount}/${result.totalQuestions}`;
     this.logger.log(
-      `Chấm xong: thí sinh="${result.hoTen}" lớp="${result.lop}" mã đề=${result.maDe} ` +
-        `điểm=${score} (file khớp: ${matched?.file ?? 'không khớp'})`,
+      `Chấm xong: thí sinh="${result.fullName}" lớp="${result.className}" ` +
+        `mã đề ảnh=${result.examCode} (nhập tay=${key.examCode}) điểm=${score}`,
     );
 
     return {
-      hoTen: result.hoTen,
-      boMe: result.boMe,
-      sdtBoMe: result.sdtBoMe,
-      lop: result.lop,
-      maDe: result.maDe,
+      fullName: result.fullName,
+      parentName: result.parentName,
+      parentPhone: result.parentPhone,
+      className: result.className,
+      extractedExamCode: result.examCode,
       score,
       correctCount: result.correctCount,
       totalQuestions: result.totalQuestions,
-      perQuestion: result.perQuestion,
-      matchedFile: matched?.file ?? '',
+      questions: result.questions,
+      matchedFile: key.file,
       note: result.note,
     };
   }
