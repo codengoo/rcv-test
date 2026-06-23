@@ -19,10 +19,20 @@ import {
   GoogleSheetsService,
   CellValue,
 } from "../shared/google-sheets/google-sheets.service";
+import { GoogleDriveService } from "../shared/google-drive/google-drive.service";
 import { QuizService } from "../quiz/quiz.service";
 import { GradeService, GradeImage } from "../grade/grade.service";
 
 const IMAGE_OPTION_NAMES = ["file", "file2", "file3", "file4", "file5"];
+
+// mime ảnh → đuôi file (đặt tên file trên Drive).
+const EXT_BY_MIME: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "image/gif": "gif",
+};
 
 @Injectable()
 export class DiscordService implements OnModuleInit, OnModuleDestroy {
@@ -30,16 +40,21 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
   private readonly client: Client;
   private readonly sheetId: string;
   private readonly guildId: string;
+  private readonly driveFolderId: string;
   private sheetRange = "";
 
   constructor(
     private readonly config: ConfigService,
     private readonly sheets: GoogleSheetsService,
+    private readonly drive: GoogleDriveService,
     private readonly quiz: QuizService,
     private readonly grade: GradeService,
   ) {
     this.sheetId = this.config.getOrThrow<string>("GOOGLE_SHEET_ID");
     this.guildId = this.config.getOrThrow<string>("DISCORD_GUILD_ID");
+    this.driveFolderId = this.config.getOrThrow<string>(
+      "GOOGLE_DRIVE_FOLDER_ID",
+    );
     // Chỉ cần Guilds (slash command). Không đọc nội dung message nữa.
     this.client = new Client({ intents: [GatewayIntentBits.Guilds] });
   }
@@ -274,24 +289,16 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      // Tải ảnh → base64.
-      const loaded: GradeImage[] = await Promise.all(
-        images.map(async (a) => {
-          const res = await fetch(a.url);
-          if (!res.ok)
-            throw new Error(`tải ảnh ${a.name} fail HTTP ${res.status}`);
-          const buf = Buffer.from(await res.arrayBuffer());
-          return {
-            base64: buf.toString("base64"),
-            mime: a.contentType ?? "image/jpeg",
-          };
-        }),
+      // Tải ảnh về buffer → upload Drive (CDN Discord hết hạn) + base64 cho Gemini.
+      const { loaded, links } = await this.uploadImagesToDrive(
+        images,
+        examCode,
       );
 
       const result = await this.grade.grade(examCode, loaded);
 
-      // Link ảnh CDN discord (nối nhiều ảnh bằng newline).
-      const imageLinks = images.map((a) => a.url).join("\n");
+      // Link Drive (nối nhiều ảnh bằng newline) — ghi vào Sheet.
+      const imageLinks = links.join("\n");
 
       // Lazy resolve worksheet nếu boot-time verify thất bại.
       if (!this.sheetRange) {
@@ -349,5 +356,41 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
         ],
       });
     }
+  }
+
+  /**
+   * Tải các ảnh bài làm từ CDN Discord về buffer, UPLOAD lên folder Drive (vì
+   * link CDN hết hạn), đồng thời trả base64 cho Gemini và link Drive đã upload.
+   */
+  private async uploadImagesToDrive(
+    images: Attachment[],
+    examCode: string,
+  ): Promise<{ loaded: GradeImage[]; links: string[] }> {
+    const stamp = Date.now();
+    const slug =
+      examCode.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-") || "exam";
+
+    const loaded: GradeImage[] = [];
+    const links: string[] = [];
+    for (let i = 0; i < images.length; i++) {
+      const a = images[i];
+      const res = await fetch(a.url);
+      if (!res.ok) throw new Error(`tải ảnh ${a.name} fail HTTP ${res.status}`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      const mime = a.contentType?.split(";")[0] ?? "image/jpeg";
+      const ext =
+        EXT_BY_MIME[mime] ?? a.name.split(".").pop()?.toLowerCase() ?? "jpg";
+      const name = `rcv-${slug}-${stamp}-${i + 1}.${ext}`;
+      const up = await this.drive.uploadFile(
+        this.driveFolderId,
+        name,
+        mime,
+        buf,
+      );
+      loaded.push({ base64: buf.toString("base64"), mime });
+      links.push(up.link);
+    }
+    this.logger.log(`Đã upload ${links.length} ảnh bài làm lên Drive`);
+    return { loaded, links };
   }
 }

@@ -12,6 +12,11 @@ export class EnvironmentVariables {
   @IsString()
   GOOGLE_SHEET_ID!: string;
 
+  // ID folder Google Drive để lưu ảnh bài làm (link CDN Discord hết hạn).
+  // Folder phải được chia sẻ quyền Editor cho email service account.
+  @IsString()
+  GOOGLE_DRIVE_FOLDER_ID!: string;
+
   // API key Gemini cho luồng đọc/chấm bài làm + giải đề.
   @IsString()
   GEMINI_API_KEY!: string;
