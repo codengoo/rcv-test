@@ -143,9 +143,17 @@ export class GradeService {
     // Đáp án tối giản (minify): chỉ id + type + correctAnswer.
     const answerKeyJson = JSON.stringify(key.questions);
 
+    // filePart nhận Buffer; GeminiService tự quyết định upload File API (ảnh
+    // > 2MB) hay nhúng inline, và tự dọn asset sau khi chấm xong.
     const parts: AiPart[] = [
       this.gemini.textPart(`${GRADE_PROMPT}\n\n=== ĐÁP ÁN ===\n${answerKeyJson}`),
-      ...images.map((img) => this.gemini.imagePart(img.base64, img.mime)),
+      ...images.map((img, i) =>
+        this.gemini.filePart(
+          Buffer.from(img.base64, 'base64'),
+          img.mime,
+          `grade-${key.examCode}-${i}`,
+        ),
+      ),
     ];
 
     this.logger.log(

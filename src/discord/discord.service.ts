@@ -341,6 +341,16 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
             }`,
           },
         );
+      // Chi tiết từng câu: đáp án thí sinh + đúng/sai (kèm đáp án đúng nếu sai).
+      // Discord giới hạn 1024 ký tự/field → chia thành nhiều field nếu đề dài.
+      const detailLines = result.questions.map((q) => {
+        const ans = q.studentAnswer || "∅";
+        return q.isCorrect
+          ? `Câu ${q.id}: ${ans} ✅`
+          : `Câu ${q.id}: ${ans} ❌ (đúng: ${q.correctAnswer || "?"})`;
+      });
+      this.addDetailFields(embed, detailLines);
+
       if (result.note) {
         embed.addFields({ name: "Ghi chú", value: result.note.slice(0, 1000) });
       }
@@ -356,6 +366,29 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
         ],
       });
     }
+  }
+
+  /**
+   * Gom các dòng chi tiết câu thành các field embed, mỗi field ≤ 1024 ký tự
+   * (giới hạn Discord). Field đầu tên "Chi tiết", các field tiếp "Chi tiết (tiếp)".
+   */
+  private addDetailFields(embed: EmbedBuilder, lines: string[]): void {
+    if (lines.length === 0) return;
+    const MAX = 1024;
+    let buf = "";
+    let first = true;
+    const flush = () => {
+      if (!buf) return;
+      embed.addFields({ name: first ? "Chi tiết" : "Chi tiết (tiếp)", value: buf });
+      first = false;
+      buf = "";
+    };
+    for (const line of lines) {
+      // +1 cho ký tự xuống dòng khi nối thêm.
+      if (buf && buf.length + 1 + line.length > MAX) flush();
+      buf = buf ? `${buf}\n${line}` : line;
+    }
+    flush();
   }
 
   /**

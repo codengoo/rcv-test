@@ -64,13 +64,15 @@ export class QuizService {
     mimeType: string,
     originalName: string,
   ): Promise<QuizResult> {
-    // 1) Dựng input part theo định dạng.
+    // 1) Dựng input part theo định dạng. PDF: filePart(Buffer) — GeminiService
+    //    tự quyết định upload File API (PDF > 2MB) hay inline, và tự dọn asset.
+    //    DOCX: trích text cục bộ, không có file.
     let inputPart: AiPart;
     if (mimeType === PDF_MIME) {
       this.logger.log(
-        `Quiz: PDF "${originalName}" (${buffer.length} bytes) → media part`,
+        `Quiz: PDF "${originalName}" (${buffer.length} bytes) → file part`,
       );
-      inputPart = this.gemini.mediaPart(buffer.toString('base64'), PDF_MIME);
+      inputPart = this.gemini.filePart(buffer, PDF_MIME, originalName);
     } else if (mimeType === DOCX_MIME) {
       const { value: text } = await mammoth.extractRawText({ buffer });
       this.logger.log(
