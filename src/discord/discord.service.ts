@@ -287,10 +287,8 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
       await progress.begin(1);
       const result = await this.quiz.solveAndSave(buffer, mime, file.name);
 
-      const examViewLink = result.examCode
-        ? `${this.resultWebUrl}?exam_code=${encodeURIComponent(result.examCode)}`
-        : "";
-      const examEditLink = result.editCode
+      // 1 link duy nhất (code 6 số): vừa xem vừa sửa đáp án/lời giải của đề.
+      const examLink = result.editCode
         ? `${this.resultWebUrl}?exam_edit=${result.editCode}`
         : "";
 
@@ -305,16 +303,10 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
           { name: "Đáp án (JSON)", value: "`" + result.savedPath + "`" },
           { name: "Bản giải (MD)", value: "`" + result.mdPath + "`" },
         );
-      if (examViewLink) {
+      if (examLink) {
         quizEmbed.addFields({
-          name: "🔗 Xem đề & đáp án",
-          value: examViewLink,
-        });
-      }
-      if (examEditLink) {
-        quizEmbed.addFields({
-          name: "✍️ Cán bộ sửa đáp án/lời giải",
-          value: examEditLink,
+          name: "🔗 Xem & sửa đề (đáp án/lời giải)",
+          value: examLink,
         });
       }
       await interaction.editReply({ embeds: [quizEmbed] });

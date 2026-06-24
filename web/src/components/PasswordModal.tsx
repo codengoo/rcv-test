@@ -5,6 +5,7 @@ import {
   unlockResult,
   UnlockError,
 } from '../api';
+import { btnGhost, btnPrimary, input } from '../ui';
 
 interface Props {
   item: ResultListItem;
@@ -41,17 +42,23 @@ export function PasswordModal({ item, onClose, onUnlocked }: Props) {
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2 className="modal__title">{item.fullName || 'Xem kết quả'}</h2>
-        <p className="modal__hint">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-md rounded-xl border border-border bg-surface p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-lg font-bold">{item.fullName || 'Xem kết quả'}</h2>
+        <p className="mt-2 text-muted">
           Nhập mật khẩu để xem chi tiết bài làm.
           <br />
           Mật khẩu là <strong>6 số cuối số điện thoại</strong> của phụ huynh.
         </p>
         <form onSubmit={handleSubmit}>
           <input
-            className="modal__input"
+            className={`${input} mt-3`}
             type="text"
             inputMode="numeric"
             autoFocus
@@ -59,14 +66,14 @@ export function PasswordModal({ item, onClose, onUnlocked }: Props) {
             value={code}
             onChange={(e) => setCode(e.target.value)}
           />
-          {error && <p className="modal__error">{error}</p>}
-          <div className="modal__actions">
-            <button type="button" className="btn btn--ghost" onClick={onClose}>
+          {error && <p className="mt-2 text-wrong">{error}</p>}
+          <div className="mt-4 flex justify-end gap-2.5">
+            <button type="button" className={btnGhost} onClick={onClose}>
               Hủy
             </button>
             <button
               type="submit"
-              className="btn btn--primary"
+              className={btnPrimary}
               disabled={submitting || !code.trim()}
             >
               {submitting ? 'Đang kiểm tra…' : 'Xem kết quả'}

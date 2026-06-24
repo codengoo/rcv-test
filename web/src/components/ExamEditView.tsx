@@ -1,5 +1,16 @@
 import { useState } from 'react';
 import { ExamDetail, ReviewError, saveExam } from '../api';
+import { ConfirmModal } from './ConfirmModal';
+import {
+  btnPrimary,
+  btnSm,
+  explanationBox,
+  footerBar,
+  optionsList,
+  page,
+  questionCard,
+  sectionTitle,
+} from '../ui';
 
 interface Props {
   code: string;
@@ -15,24 +26,40 @@ interface EditQuestion {
   explanation: string;
 }
 
+function toEdit(qs: ExamDetail['questions']): EditQuestion[] {
+  return qs.map((q) => ({
+    id: q.id,
+    type: q.type,
+    question: q.question,
+    options: q.options,
+    correctAnswer: q.correctAnswer,
+    explanation: q.explanation,
+  }));
+}
+
 /**
- * Màn sửa đề cho cán bộ (?exam_edit=NNNNNN): sửa đáp án đúng + lời giải từng
- * câu rồi lưu. KHÔNG đổi câu hỏi/options, KHÔNG chấm lại bài đã chấm.
+ * Màn xem & sửa đề cho cán bộ (?exam_edit=NNNNNN): mỗi câu mặc định xem; bấm
+ * "Sửa" mở chỉnh sửa CHỈ câu đó (đáp án đúng + lời giải). "Cập nhật" cuối trang
+ * mở popup xác nhận rồi lưu. KHÔNG đổi câu hỏi/options, KHÔNG chấm lại bài cũ.
  */
 export function ExamEditView({ code, initial }: Props) {
   const [questions, setQuestions] = useState<EditQuestion[]>(
-    initial.questions.map((q) => ({
-      id: q.id,
-      type: q.type,
-      question: q.question,
-      options: q.options,
-      correctAnswer: q.correctAnswer,
-      explanation: q.explanation,
-    })),
+    toEdit(initial.questions),
   );
+  const [editing, setEditing] = useState<Set<string>>(new Set());
+  const [confirming, setConfirming] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
+
+  function toggleEdit(id: string) {
+    setEditing((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   function update(id: string, patch: Partial<EditQuestion>) {
     setSaved(false);
@@ -41,7 +68,7 @@ export function ExamEditView({ code, initial }: Props) {
     );
   }
 
-  async function onSave() {
+  async function doSave() {
     setSaving(true);
     setError('');
     try {
@@ -53,98 +80,136 @@ export function ExamEditView({ code, initial }: Props) {
           explanation: q.explanation,
         })),
       );
-      setQuestions(
-        updated.questions.map((q) => ({
-          id: q.id,
-          type: q.type,
-          question: q.question,
-          options: q.options,
-          correctAnswer: q.correctAnswer,
-          explanation: q.explanation,
-        })),
-      );
+      setQuestions(toEdit(updated.questions));
+      setEditing(new Set());
       setSaved(true);
+      setConfirming(false);
     } catch (err) {
       setError(
         err instanceof ReviewError && err.reason === 'notfound'
           ? 'Không tìm thấy đề (link sửa không hợp lệ).'
           : 'Lưu thất bại, vui lòng thử lại.',
       );
+      setConfirming(false);
     } finally {
       setSaving(false);
     }
   }
 
   return (
-    <div className="page">
-      <header className="detail__header">
-        <h1>{initial.title || `Đề ${initial.examCode}`}</h1>
-        <div className="detail__meta">
+    <div className={page}>
+      <header className="mb-6">
+        <h1 className="text-2xl font-bold">
+          {initial.title || `Đề ${initial.examCode}`}
+        </h1>
+        <div className="mt-2 flex flex-wrap gap-4 text-muted">
           <span>Mã đề {initial.examCode}</span>
           <span>{questions.length} câu</span>
         </div>
-        <p className="detail__note">
-          Chế độ <strong>sửa đề</strong>: chỉnh đáp án đúng và lời giải từng câu,
-          rồi bấm “Lưu đề”. Việc sửa không ảnh hưởng các bài đã chấm trước đó.
+        <p className="mt-2 text-muted">
+          Mỗi câu hiển thị ở chế độ xem; bấm <strong>Sửa</strong> để chỉnh đáp án
+          đúng và lời giải của câu đó, rồi bấm “Cập nhật”. Việc sửa không ảnh
+          hưởng các bài đã chấm trước đó.
         </p>
       </header>
 
-      <section className="detail__section">
-        <h2>Sửa đáp án & lời giải</h2>
-        <div className="questions">
-          {questions.map((q) => (
-            <div key={q.id} className="question">
-              <div className="question__head">
-                <span className="question__no">
-                  Câu {q.id}
-                  {q.type ? ` · ${q.type}` : ''}
-                </span>
+      <section className="mb-8">
+        <h2 className={sectionTitle}>Đề & đáp án</h2>
+        <div className="flex flex-col gap-3.5">
+          {questions.map((q) => {
+            const isEditing = editing.has(q.id);
+            return (
+              <div key={q.id} className={questionCard}>
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <span className="font-bold">
+                    Câu {q.id}
+                    {q.type ? ` · ${q.type}` : ''}
+                  </span>
+                  <button
+                    type="button"
+                    className={`${btnSm} ${isEditing ? 'border-primary text-primary' : 'border-border text-text hover:bg-surface2'}`}
+                    onClick={() => toggleEdit(q.id)}
+                  >
+                    {isEditing ? '✓ Xong' : '✏️ Sửa'}
+                  </button>
+                </div>
+                {q.question && <p className="my-1">{q.question}</p>}
+                {q.options.length > 0 && (
+                  <ul className={optionsList}>
+                    {q.options.map((opt, i) => (
+                      <li key={i}>{opt}</li>
+                    ))}
+                  </ul>
+                )}
+
+                {isEditing ? (
+                  <>
+                    <label className="mt-2.5 flex flex-col gap-1.5 text-sm text-muted">
+                      Đáp án đúng
+                      <input
+                        type="text"
+                        value={q.correctAnswer}
+                        onChange={(e) =>
+                          update(q.id, { correctAnswer: e.target.value })
+                        }
+                        className="rounded-lg border border-border bg-bg px-2.5 py-2 text-text focus:outline-none focus:border-primary"
+                      />
+                    </label>
+                    <label className="mt-2.5 flex flex-col gap-1.5 text-sm text-muted">
+                      Lời giải
+                      <textarea
+                        rows={3}
+                        value={q.explanation}
+                        onChange={(e) =>
+                          update(q.id, { explanation: e.target.value })
+                        }
+                        className="resize-y rounded-lg border border-border bg-bg px-2.5 py-2 text-text focus:outline-none focus:border-primary"
+                      />
+                    </label>
+                  </>
+                ) : (
+                  <>
+                    <div className="my-2">
+                      Đáp án:{' '}
+                      <strong className="text-correct">
+                        {q.correctAnswer || '?'}
+                      </strong>
+                    </div>
+                    {q.explanation && (
+                      <p className={explanationBox}>{q.explanation}</p>
+                    )}
+                  </>
+                )}
               </div>
-              {q.question && <p className="question__text">{q.question}</p>}
-              {q.options.length > 0 && (
-                <ul className="question__options">
-                  {q.options.map((opt, i) => (
-                    <li key={i}>{opt}</li>
-                  ))}
-                </ul>
-              )}
-              <label className="exam__field">
-                Đáp án đúng
-                <input
-                  type="text"
-                  value={q.correctAnswer}
-                  onChange={(e) =>
-                    update(q.id, { correctAnswer: e.target.value })
-                  }
-                />
-              </label>
-              <label className="exam__field">
-                Lời giải
-                <textarea
-                  rows={3}
-                  value={q.explanation}
-                  onChange={(e) =>
-                    update(q.id, { explanation: e.target.value })
-                  }
-                />
-              </label>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </section>
 
-      <div className="review__footer">
-        {error && <span className="state state--error">{error}</span>}
-        {saved && !error && <span className="review__saved">✓ Đã lưu</span>}
+      <div className={footerBar}>
+        {error && <span className="text-wrong">{error}</span>}
+        {saved && !error && (
+          <span className="font-semibold text-correct">✓ Đã lưu</span>
+        )}
         <button
           type="button"
-          className="btn btn--primary"
-          onClick={onSave}
-          disabled={saving}
+          className={btnPrimary}
+          onClick={() => setConfirming(true)}
         >
-          {saving ? 'Đang lưu…' : 'Lưu đề'}
+          Cập nhật
         </button>
       </div>
+
+      {confirming && (
+        <ConfirmModal
+          title="Xác nhận cập nhật đề"
+          message="Lưu thay đổi đáp án và lời giải cho đề này? Các bài đã chấm trước đó không bị ảnh hưởng."
+          confirmLabel="Cập nhật"
+          busy={saving}
+          onConfirm={doSave}
+          onCancel={() => setConfirming(false)}
+        />
+      )}
     </div>
   );
 }

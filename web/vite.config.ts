@@ -1,9 +1,10 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 
 // Dev: proxy /api → Nest (3000). Prod: build tĩnh ra dist, Nest serve cùng origin.
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   server: {
     allowedHosts: ["rcv-result.nghiacn.cloud"],
     proxy: {

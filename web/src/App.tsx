@@ -16,6 +16,10 @@ import { ResultDetailView } from './components/ResultDetailView';
 import { ReviewView } from './components/ReviewView';
 import { ExamView } from './components/ExamView';
 import { ExamEditView } from './components/ExamEditView';
+import { input, page } from './ui';
+
+const stateText = 'py-3 text-muted';
+const errorText = 'py-3 text-wrong';
 
 /** Bỏ dấu + thường hóa để tìm tên tiếng Việt không phân biệt dấu. */
 function normalize(s: string): string {
@@ -116,17 +120,16 @@ export default function App() {
 
   // Luồng giám thị sửa kết quả: ưu tiên trước màn danh sách/chi tiết.
   if (reviewCode) {
-    if (reviewLoading) return <p className="state">Đang tải bài thi…</p>;
-    if (reviewError)
-      return <p className="state state--error">{reviewError}</p>;
+    if (reviewLoading) return <p className={stateText}>Đang tải bài thi…</p>;
+    if (reviewError) return <p className={errorText}>{reviewError}</p>;
     if (review) return <ReviewView code={reviewCode} initial={review} />;
     return null;
   }
 
   // Luồng xem/sửa đề.
   if (examCode || examEditCode) {
-    if (examLoading) return <p className="state">Đang tải đề…</p>;
-    if (examError) return <p className="state state--error">{examError}</p>;
+    if (examLoading) return <p className={stateText}>Đang tải đề…</p>;
+    if (examError) return <p className={errorText}>{examError}</p>;
     if (exam && examEditCode)
       return <ExamEditView code={examEditCode} initial={exam} />;
     if (exam) return <ExamView detail={exam} />;
@@ -144,24 +147,24 @@ export default function App() {
   }
 
   return (
-    <div className="page">
-      <header className="page__header">
-        <h1>Tra cứu kết quả thi</h1>
-        <p className="page__subtitle">
+    <div className={page}>
+      <header className="mb-6">
+        <h1 className="text-2xl font-bold">Tra cứu kết quả thi</h1>
+        <p className="mt-1 text-muted">
           Chọn thí sinh và nhập mật khẩu để xem chi tiết bài làm.
         </p>
       </header>
 
-      {loading && <p className="state">Đang tải danh sách…</p>}
-      {loadError && <p className="state state--error">{loadError}</p>}
+      {loading && <p className={stateText}>Đang tải danh sách…</p>}
+      {loadError && <p className={errorText}>{loadError}</p>}
       {!loading && !loadError && items.length === 0 && (
-        <p className="state">Chưa có kết quả nào.</p>
+        <p className={stateText}>Chưa có kết quả nào.</p>
       )}
 
       {!loading && !loadError && items.length > 0 && (
         <>
           <input
-            className="search"
+            className={`${input} mb-4`}
             type="search"
             placeholder="Tìm theo tên thí sinh…"
             value={query}
@@ -170,7 +173,7 @@ export default function App() {
           {filtered.length > 0 ? (
             <ResultList items={filtered} onSelect={setModalItem} />
           ) : (
-            <p className="state">Không tìm thấy thí sinh nào.</p>
+            <p className={stateText}>Không tìm thấy thí sinh nào.</p>
           )}
         </>
       )}
