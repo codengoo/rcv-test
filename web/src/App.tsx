@@ -1,8 +1,16 @@
 import { useEffect, useState } from 'react';
-import { fetchResults, ResultDetail, ResultListItem } from './api';
+import {
+  fetchResults,
+  getReview,
+  ResultDetail,
+  ResultListItem,
+  ReviewDetail,
+  ReviewError,
+} from './api';
 import { ResultList } from './components/ResultList';
 import { PasswordModal } from './components/PasswordModal';
 import { ResultDetailView } from './components/ResultDetailView';
+import { ReviewView } from './components/ReviewView';
 
 /** Bỏ dấu + thường hóa để tìm tên tiếng Việt không phân biệt dấu. */
 function normalize(s: string): string {
@@ -25,10 +33,19 @@ export default function App() {
   // Chi tiết đã unlock (null = đang ở màn danh sách).
   const [detail, setDetail] = useState<ResultDetail | null>(null);
 
+  const params = new URLSearchParams(window.location.search);
   // ?result_id=... → mở sẵn modal nhập mật khẩu cho kết quả đó.
-  const resultId = new URLSearchParams(window.location.search).get('result_id');
+  const resultId = params.get('result_id');
+  // ?review_code=NNNNNN → chế độ giám thị sửa kết quả (code trong URL là quyền).
+  const reviewCode = params.get('review_code');
+
+  // Trạng thái cho luồng giám thị sửa (chỉ dùng khi có review_code).
+  const [review, setReview] = useState<ReviewDetail | null>(null);
+  const [reviewLoading, setReviewLoading] = useState(!!reviewCode);
+  const [reviewError, setReviewError] = useState('');
 
   useEffect(() => {
+    if (reviewCode) return; // có review_code → bỏ qua tải danh sách công khai
     fetchResults()
       .then((list) => {
         setItems(list);
@@ -48,7 +65,30 @@ export default function App() {
       })
       .catch((err: Error) => setLoadError(err.message))
       .finally(() => setLoading(false));
-  }, [resultId]);
+  }, [resultId, reviewCode]);
+
+  useEffect(() => {
+    if (!reviewCode) return;
+    getReview(reviewCode)
+      .then(setReview)
+      .catch((err: unknown) =>
+        setReviewError(
+          err instanceof ReviewError && err.reason === 'notfound'
+            ? 'Link sửa không hợp lệ hoặc bài thi không tồn tại.'
+            : 'Không tải được bài thi, vui lòng thử lại.',
+        ),
+      )
+      .finally(() => setReviewLoading(false));
+  }, [reviewCode]);
+
+  // Luồng giám thị: ưu tiên trước màn danh sách/chi tiết.
+  if (reviewCode) {
+    if (reviewLoading) return <p className="state">Đang tải bài thi…</p>;
+    if (reviewError)
+      return <p className="state state--error">{reviewError}</p>;
+    if (review) return <ReviewView code={reviewCode} initial={review} />;
+    return null;
+  }
 
   const filtered = query.trim()
     ? items.filter((it) => normalize(it.fullName).includes(normalize(query)))

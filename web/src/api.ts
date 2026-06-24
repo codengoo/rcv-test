@@ -11,25 +11,52 @@ export interface ResultListItem {
 
 export interface ResultDetailQuestion {
   id: string;
+  type: string;
   question: string;
   options: string[];
   studentAnswer: string;
   correctAnswer: string;
   isCorrect: boolean;
+  earnedPoints: number;
   explanation: string;
 }
 
 export interface ResultDetail {
   id: string;
+  status: string;
   fullName: string;
   className: string;
   examCode: string;
   score: string;
   correctCount: number;
   totalQuestions: number;
+  totalScore: number;
+  scoreText: string;
   note: string;
   images: { url: string }[];
   questions: ResultDetailQuestion[];
+}
+
+/** Chi tiết bài thi cho giám thị sửa (truy cập bằng reviewCode trong URL). */
+export interface ReviewDetail {
+  id: string;
+  status: string;
+  fullName: string;
+  className: string;
+  examCode: string;
+  totalScore: number;
+  maxScore: number;
+  scoreText: string;
+  note: string;
+  images: { url: string }[];
+  questions: ResultDetailQuestion[];
+}
+
+/** Một chỉnh sửa gửi lên server khi giám thị lưu. */
+export interface ReviewEditInput {
+  id: string;
+  isCorrect: boolean;
+  earnedPoints: number;
 }
 
 /** Lý do unlock thất bại để UI hiển thị thông điệp phù hợp. */
@@ -66,4 +93,51 @@ export async function unlockResult(
   if (res.status === 429) throw new UnlockError('rate');
   if (!res.ok) throw new UnlockError('network');
   return (await res.json()) as ResultDetail;
+}
+
+/** Lý do tải/lưu trang sửa thất bại. */
+export type ReviewFailReason = 'notfound' | 'network';
+
+export class ReviewError extends Error {
+  constructor(public reason: ReviewFailReason) {
+    super(reason);
+  }
+}
+
+/** Lấy chi tiết bài thi để giám thị sửa (code 6 số trong URL). */
+export async function getReview(code: string): Promise<ReviewDetail> {
+  let res: Response;
+  try {
+    res = await fetch(`/api/review/${encodeURIComponent(code)}`);
+  } catch {
+    throw new ReviewError('network');
+  }
+  if (res.status === 404) throw new ReviewError('notfound');
+  if (!res.ok) throw new ReviewError('network');
+  return (await res.json()) as ReviewDetail;
+}
+
+/** Lưu chỉnh sửa của giám thị → trả lại chi tiết đã cập nhật. */
+export async function saveReview(
+  code: string,
+  questions: ReviewEditInput[],
+): Promise<ReviewDetail> {
+  let res: Response;
+  try {
+    res = await fetch(`/api/review/${encodeURIComponent(code)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ questions }),
+    });
+  } catch {
+    throw new ReviewError('network');
+  }
+  if (res.status === 404) throw new ReviewError('notfound');
+  if (!res.ok) throw new ReviewError('network');
+  return (await res.json()) as ReviewDetail;
+}
+
+/** Format điểm hiển thị, bỏ .00 thừa: 4 -> "4", 3.5 -> "3.5", 3.75 -> "3.75". */
+export function formatScore(n: number): string {
+  return Number((Math.round(n * 100) / 100).toFixed(2)).toString();
 }

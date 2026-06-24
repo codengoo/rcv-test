@@ -344,3 +344,73 @@ body {
   color: var(--muted);
   font-size: 0.92rem;
 }
+
+/* ---- Review (giám thị chấm lại) ---- */
+.badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.review__points {
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.review__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 4px;
+}
+
+.btn--toggle {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: inherit;
+}
+
+.btn--toggle.is-active.is-correct {
+  border-color: var(--correct);
+  color: var(--correct);
+}
+
+.btn--toggle.is-active.is-wrong {
+  border-color: var(--wrong);
+  color: var(--wrong);
+}
+
+.review__pointsInput {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.review__pointsInput input {
+  width: 72px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: inherit;
+}
+
+.review__footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  margin: 24px 0 40px;
+}
+
+.review__saved {
+  color: var(--correct);
+  font-weight: 600;
+}

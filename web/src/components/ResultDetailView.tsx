@@ -3,11 +3,20 @@ import Lightbox from 'yet-another-react-lightbox';
 import Zoom from 'yet-another-react-lightbox/plugins/zoom';
 import Fullscreen from 'yet-another-react-lightbox/plugins/fullscreen';
 import 'yet-another-react-lightbox/styles.css';
-import { ResultDetail } from '../api';
+import { ResultDetail, formatScore } from '../api';
 
 interface Props {
   detail: ResultDetail;
   onBack: () => void;
+}
+
+const NOTE =
+  'Bài thi được chấm tự động bởi RCV exam và được chấm lại bởi cán bộ chấm thi.';
+
+function statusLabel(status: string): string {
+  return status === 'confirmed'
+    ? '🟢 Đã xác nhận bởi cán bộ chấm thi'
+    : '🟡 Đã chấm tự động';
 }
 
 /** Màn chi tiết: thông tin + ảnh bài làm (zoom/fullscreen) + bảng từng câu. */
@@ -28,9 +37,12 @@ export function ResultDetailView({ detail, onBack }: Props) {
           <span>Lớp {detail.className || '-'}</span>
           <span>Mã đề {detail.examCode}</span>
           <span className="detail__score">
-            Điểm: {detail.score} ({detail.correctCount}/{detail.totalQuestions})
+            Điểm: {detail.scoreText} điểm ({detail.correctCount}/
+            {detail.totalQuestions} câu đúng)
           </span>
+          <span className="badge">{statusLabel(detail.status)}</span>
         </div>
+        <p className="detail__note">{NOTE}</p>
         {detail.note && <p className="detail__note">Ghi chú: {detail.note}</p>}
       </header>
 
@@ -71,7 +83,7 @@ export function ResultDetailView({ detail, onBack }: Props) {
               <div className="question__head">
                 <span className="question__no">Câu {q.id}</span>
                 <span className="question__status">
-                  {q.isCorrect ? '✓ Đúng' : '✗ Sai'}
+                  {q.isCorrect ? '✓ Đúng' : '✗ Sai'} · {formatScore(q.earnedPoints)}đ
                 </span>
               </div>
               {q.question && <p className="question__text">{q.question}</p>}
