@@ -22,7 +22,10 @@ import {
 import { GoogleDriveService } from "../shared/google-drive/google-drive.service";
 import { QuizService } from "../quiz/quiz.service";
 import { GradeService, GradeImage } from "../grade/grade.service";
-import { SubmissionService } from "../submission/submission.service";
+import {
+  SubmissionService,
+  formatScore,
+} from "../submission/submission.service";
 import sharp from "sharp";
 
 /** Ảnh đã upload Drive: giữ fileId (FE dựng URL) + link (ghi Sheet). */
@@ -53,6 +56,63 @@ const EXT_BY_MIME: Record<string, string> = {
   "image/webp": "webp",
   "image/gif": "gif",
 };
+
+type StepStatus = "pending" | "running" | "done" | "error";
+
+// Icon hiển thị trạng thái từng bước trong embed tiến độ.
+const STEP_ICON: Record<StepStatus, string> = {
+  pending: "⚪",
+  running: "⏳",
+  done: "✅",
+  error: "❌",
+};
+
+/**
+ * Báo tiến độ từng bước vào reply đã defer để người dùng theo dõi (đỡ ngóng).
+ * Mỗi lần `begin(i)` đánh dấu bước trước là xong, bước i đang chạy, rồi cập nhật
+ * embed. Lỗi khi edit (interaction hết hạn…) bị nuốt — tiến độ chỉ là best-effort,
+ * không được làm hỏng luồng chính.
+ */
+class StepProgress {
+  private readonly status: StepStatus[];
+  private current = -1;
+
+  constructor(
+    private readonly interaction: ChatInputCommandInteraction,
+    private readonly title: string,
+    private readonly labels: string[],
+  ) {
+    this.status = labels.map(() => "pending");
+  }
+
+  /** Đánh dấu bước trước xong, bắt đầu bước i, cập nhật embed. */
+  async begin(i: number): Promise<void> {
+    if (this.current >= 0 && this.status[this.current] === "running") {
+      this.status[this.current] = "done";
+    }
+    this.current = i;
+    this.status[i] = "running";
+    await this.render();
+  }
+
+  private async render(): Promise<void> {
+    const lines = this.labels.map(
+      (label, i) => `${STEP_ICON[this.status[i]]} ${label}`,
+    );
+    try {
+      await this.interaction.editReply({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0x3498db)
+            .setTitle(this.title)
+            .setDescription(lines.join("\n")),
+        ],
+      });
+    } catch {
+      // best-effort: không chặn luồng chính nếu cập nhật tiến độ thất bại.
+    }
+  }
+}
 
 @Injectable()
 export class DiscordService implements OnModuleInit, OnModuleDestroy {
@@ -212,11 +272,18 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const progress = new StepProgress(interaction, "⏳ Đang giải đề…", [
+      "Tải file từ Discord",
+      "Giải đề & lưu đáp án (AI)",
+    ]);
+
     try {
+      await progress.begin(0);
       const res = await fetch(file.url);
       if (!res.ok) throw new Error(`tải file fail HTTP ${res.status}`);
       const buffer = Buffer.from(await res.arrayBuffer());
 
+      await progress.begin(1);
       const result = await this.quiz.solveAndSave(buffer, mime, file.name);
 
       await interaction.editReply({
@@ -316,8 +383,15 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const progress = new StepProgress(interaction, "⏳ Đang chấm bài…", [
+      `Tải & nén ${images.length} ảnh`,
+      "Chấm bài (AI) & tải ảnh lên Drive",
+      "Ghi điểm vào Sheet & lưu kết quả",
+    ]);
+
     try {
       // 1) Tải + nén ảnh (song song) — 1 buffer dùng cho cả Gemini lẫn Drive.
+      await progress.begin(0);
       const prepared = await this.prepareImages(images);
       const gradeImages: GradeImage[] = prepared.map((p) => ({
         base64: p.buf.toString("base64"),
@@ -330,6 +404,7 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
       }
 
       // 2) CHẤM (Gemini) và UPLOAD DRIVE chạy SONG SONG — 2 việc nặng nhất.
+      await progress.begin(1);
       const [result, uploaded] = await Promise.all([
         this.grade.grade(examCode, gradeImages),
         this.uploadAllToDrive(prepared, examCode),
@@ -337,53 +412,72 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
 
       // Link Drive (nối nhiều ảnh bằng newline) — ghi vào Sheet.
       const imageLinks = uploaded.map((u) => u.link).join("\n");
+      const scoreText = formatScore(result.totalScore); // "3.75"
 
-      // Cột A→F = thông tin AI trích + điểm + link ảnh.
+      // 3) Lưu Mongo TRƯỚC (cần _id + reviewCode để dựng link), best-effort.
+      await progress.begin(2);
+      const submission = await this.submissions
+        .create({
+          examCode: result.examCode,
+          fullName: result.fullName,
+          parentName: result.parentName,
+          parentPhone: result.parentPhone,
+          className: result.className,
+          dob: "", // không dùng cho accessCode (giờ là 6 số cuối SĐT)
+          score: result.score,
+          correctCount: result.correctCount,
+          totalQuestions: result.totalQuestions,
+          totalScore: result.totalScore,
+          maxScore: result.maxScore,
+          questions: result.questions,
+          images: uploaded,
+          note: result.note,
+        })
+        .catch((err: Error) => {
+          this.logger.warn(
+            `Lưu submission vào Mongo thất bại (bài chấm vẫn OK): ${err.message}`,
+          );
+          return null;
+        });
+
+      const resultId = submission?._id?.toString() ?? "";
+      const resultLink = resultId
+        ? `${this.resultWebUrl}?result_id=${resultId}`
+        : "";
+      // Link sửa cho giám thị: code 6 số trong URL = quyền truy cập.
+      const reviewLink = submission?.reviewCode
+        ? `${this.resultWebUrl}?review_code=${submission.reviewCode}`
+        : "";
+
+      // 4) Ghi Sheet 7 cột rồi lưu lại range để giám thị cập nhật điểm sau.
+      // A Họ tên HS · B Tên bố/mẹ · C SĐT · D Lớp · E Điểm · F Link ảnh · G Link xem KQ.
       const row: CellValue[] = [
         result.fullName,
         result.parentName,
         result.parentPhone,
         result.className,
-        result.score,
+        `${scoreText} điểm`,
         imageLinks,
+        resultLink,
       ];
+      try {
+        const range = await this.sheets.appendRow(
+          this.sheetId,
+          this.sheetRange,
+          row,
+        );
+        this.logger.log(
+          `✅ Đã ghi điểm "${result.fullName}" ${scoreText}đ (mã đề ${examCode}) vào sheet ${range || "?"}`,
+        );
+        if (resultId && range) {
+          await this.submissions.setSheetRange(resultId, range);
+        }
+      } catch (err) {
+        this.logger.error(`Ghi Sheet thất bại: ${(err as Error).message}`);
+      }
 
-      // 3) Ghi Sheet + lưu Mongo SONG SONG (Mongo best-effort, không chặn).
-      const [, submission] = await Promise.all([
-        this.sheets.appendRow(this.sheetId, this.sheetRange, row).then(() => {
-          this.logger.log(
-            `✅ Đã ghi điểm "${result.fullName}" ${result.score} (mã đề ${examCode}) vào sheet`,
-          );
-        }),
-        this.submissions
-          .create({
-            examCode: result.examCode,
-            fullName: result.fullName,
-            parentName: result.parentName,
-            parentPhone: result.parentPhone,
-            className: result.className,
-            dob: "", // không dùng cho accessCode (giờ là 6 số cuối SĐT)
-            score: result.score,
-            correctCount: result.correctCount,
-            totalQuestions: result.totalQuestions,
-            questions: result.questions,
-            images: uploaded,
-            note: result.note,
-          })
-          .catch((err: Error) => {
-            this.logger.warn(
-              `Lưu submission vào Mongo thất bại (bài chấm vẫn OK): ${err.message}`,
-            );
-            return null;
-          }),
-      ]);
-
-      // Thời gian xử lý + link xem chi tiết trên web (nếu lưu Mongo thành công).
+      // Thời gian xử lý.
       const elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
-      const resultId = submission?._id?.toString() ?? "";
-      const resultLink = resultId
-        ? `${this.resultWebUrl}?result_id=${resultId}`
-        : "";
 
       // Đối chiếu mã đề nhập tay vs mã đề AI đọc từ ảnh.
       const codeMismatch =
@@ -394,11 +488,14 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
       const embed = new EmbedBuilder()
         .setColor(0x2ecc71)
         .setTitle(`✅ Đã chấm: ${result.fullName || "(không đọc được tên)"}`)
-        .setDescription(`**Điểm:** ${result.score}  •  **Mã đề:** ${examCode}`)
+        .setDescription(
+          `**Điểm:** ${scoreText} điểm  •  **Mã đề:** ${examCode}`,
+        )
         .addFields(
           { name: "Lớp", value: result.className || "-", inline: true },
           { name: "Bố mẹ", value: result.parentName || "-", inline: true },
           { name: "SĐT", value: result.parentPhone || "-", inline: true },
+          { name: "Trạng thái", value: "🟡 Đã chấm tự động", inline: true },
           { name: "Đáp án dùng", value: result.matchedFile },
           {
             name: "Mã đề trên ảnh",
@@ -409,7 +506,13 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
           { name: "⏱️ Thời gian xử lý", value: `${elapsedSec}s`, inline: true },
         );
       if (resultLink) {
-        embed.addFields({ name: "🔗 Xem chi tiết", value: resultLink });
+        embed.addFields({ name: "🔗 Xem kết quả", value: resultLink });
+      }
+      if (reviewLink) {
+        embed.addFields({
+          name: "✍️ Cán bộ chấm thi sửa kết quả",
+          value: reviewLink,
+        });
       }
       // Chi tiết từng câu: đáp án thí sinh + đúng/sai (kèm đáp án đúng nếu sai).
       // Discord giới hạn 1024 ký tự/field → chia thành nhiều field nếu đề dài.
