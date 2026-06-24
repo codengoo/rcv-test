@@ -414,3 +414,29 @@ body {
   color: var(--correct);
   font-weight: 600;
 }
+
+.exam__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.exam__field input,
+.exam__field textarea {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+  resize: vertical;
+}
+
+.exam__field input:focus,
+.exam__field textarea:focus {
+  outline: none;
+  border-color: var(--primary);
+}

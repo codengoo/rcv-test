@@ -39,6 +39,7 @@ const QUIZ_MD_PROMPT =
 export interface QuizResult {
   title: string;
   examCode: string;
+  editCode: string; // code 6 số cho link sửa đề
   questionCount: number;
   savedPath: string; // mô tả nơi lưu đáp án (Mongo: "mongo:exams/<examCode>")
   mdPath: string; // file .md (bản giải gốc, giữ để debug)
@@ -101,13 +102,14 @@ export class QuizService {
     this.logger.log(
       `Quiz (MD→JSON): title="${exam.title}" examCode="${exam.examCode}" câu=${exam.questions.length}`,
     );
-    const savedPath = await this.save(exam, originalName);
+    const saved = await this.save(exam, originalName);
 
     return {
       title: exam.title,
       examCode: exam.examCode,
+      editCode: saved.editCode,
       questionCount: exam.questions.length,
-      savedPath,
+      savedPath: saved.where,
       mdPath,
       originalName,
     };
@@ -115,9 +117,12 @@ export class QuizService {
 
   /**
    * Lưu đề vào MongoDB (upsert theo examCode) — Mongo là nguồn dữ liệu chính.
-   * Trả về mô tả vị trí lưu để hiển thị trong embed Discord.
+   * Trả về mô tả vị trí lưu + editCode (cho link sửa) để hiển thị trong embed.
    */
-  private async save(exam: Exam, originalName: string): Promise<string> {
+  private async save(
+    exam: Exam,
+    originalName: string,
+  ): Promise<{ where: string; editCode: string }> {
     const code = (exam.examCode || '').trim().toUpperCase();
     if (!code) {
       throw new Error(
@@ -125,14 +130,14 @@ export class QuizService {
           'Hãy bổ sung dòng "Mã đề: ..." trong đề để lưu được vào hệ thống.',
       );
     }
-    await this.exams.upsertByExamCode({
+    const doc = await this.exams.upsertByExamCode({
       examCode: code,
       title: exam.title,
       questions: exam.questions,
     });
     const where = `mongo:exams/${code}`;
     this.logger.log(`Quiz đã lưu vào Mongo: ${where}`);
-    return where;
+    return { where, editCode: doc.editCode ?? '' };
   }
 
   /** Lưu Markdown (test) vào database/ với tên rcv-<slug tên file>.md. */

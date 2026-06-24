@@ -141,3 +141,72 @@ export async function saveReview(
 export function formatScore(n: number): string {
   return Number((Math.round(n * 100) / 100).toFixed(2)).toString();
 }
+
+/** Một câu trong đề (xem/sửa). */
+export interface ExamQuestionItem {
+  id: string;
+  type: string;
+  question: string;
+  options: string[];
+  correctAnswer: string;
+  explanation: string;
+}
+
+export interface ExamDetail {
+  examCode: string;
+  title: string;
+  questions: ExamQuestionItem[];
+}
+
+/** Một chỉnh sửa đáp án/giải thích gửi lên server. */
+export interface ExamAnswerEditInput {
+  id: string;
+  correctAnswer: string;
+  explanation: string;
+}
+
+/** Xem đề công khai theo examCode. */
+export async function getExam(examCode: string): Promise<ExamDetail> {
+  let res: Response;
+  try {
+    res = await fetch(`/api/exam/${encodeURIComponent(examCode)}`);
+  } catch {
+    throw new ReviewError('network');
+  }
+  if (res.status === 404) throw new ReviewError('notfound');
+  if (!res.ok) throw new ReviewError('network');
+  return (await res.json()) as ExamDetail;
+}
+
+/** Lấy đề để sửa theo editCode 6 số. */
+export async function getExamForEdit(code: string): Promise<ExamDetail> {
+  let res: Response;
+  try {
+    res = await fetch(`/api/exam-edit/${encodeURIComponent(code)}`);
+  } catch {
+    throw new ReviewError('network');
+  }
+  if (res.status === 404) throw new ReviewError('notfound');
+  if (!res.ok) throw new ReviewError('network');
+  return (await res.json()) as ExamDetail;
+}
+
+/** Lưu sửa đáp án + giải thích → trả lại đề đã cập nhật. */
+export async function saveExam(
+  code: string,
+  questions: ExamAnswerEditInput[],
+): Promise<ExamDetail> {
+  let res: Response;
+  try {
+    res = await fetch(`/api/exam-edit/${encodeURIComponent(code)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ questions }),
+    });
+  } catch {
+    throw new ReviewError('network');
+  }
+  if (res.status === 404) throw new ReviewError('notfound');
+  if (!res.ok) throw new ReviewError('network');
+  return (await res.json()) as ExamDetail;
+}

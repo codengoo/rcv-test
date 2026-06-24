@@ -24,6 +24,10 @@ export class Exam {
 
   @Prop({ type: String, default: '' }) title!: string;
 
+  // Code 6 số cho link sửa đề của cán bộ. sparse: đề cũ chưa có vẫn hợp lệ.
+  @Prop({ type: String, unique: true, sparse: true, index: true })
+  editCode?: string;
+
   @Prop({ type: [ExamQuestionSchema], default: [] })
   questions!: ExamQuestion[];
 }

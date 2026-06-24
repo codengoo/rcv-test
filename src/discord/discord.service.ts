@@ -287,21 +287,37 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
       await progress.begin(1);
       const result = await this.quiz.solveAndSave(buffer, mime, file.name);
 
-      await interaction.editReply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0x2ecc71)
-            .setTitle(`✅ ${result.title || result.originalName}`)
-            .setDescription(
-              `Đã trích **${result.questionCount}** câu • Mã đề: **${result.examCode || "(?)"}**`,
-            )
-            .addFields(
-              { name: "File đề", value: result.originalName },
-              { name: "Đáp án (JSON)", value: "`" + result.savedPath + "`" },
-              { name: "Bản giải (MD)", value: "`" + result.mdPath + "`" },
-            ),
-        ],
-      });
+      const examViewLink = result.examCode
+        ? `${this.resultWebUrl}?exam_code=${encodeURIComponent(result.examCode)}`
+        : "";
+      const examEditLink = result.editCode
+        ? `${this.resultWebUrl}?exam_edit=${result.editCode}`
+        : "";
+
+      const quizEmbed = new EmbedBuilder()
+        .setColor(0x2ecc71)
+        .setTitle(`✅ ${result.title || result.originalName}`)
+        .setDescription(
+          `Đã trích **${result.questionCount}** câu • Mã đề: **${result.examCode || "(?)"}**`,
+        )
+        .addFields(
+          { name: "File đề", value: result.originalName },
+          { name: "Đáp án (JSON)", value: "`" + result.savedPath + "`" },
+          { name: "Bản giải (MD)", value: "`" + result.mdPath + "`" },
+        );
+      if (examViewLink) {
+        quizEmbed.addFields({
+          name: "🔗 Xem đề & đáp án",
+          value: examViewLink,
+        });
+      }
+      if (examEditLink) {
+        quizEmbed.addFields({
+          name: "✍️ Cán bộ sửa đáp án/lời giải",
+          value: examEditLink,
+        });
+      }
+      await interaction.editReply({ embeds: [quizEmbed] });
     } catch (err) {
       this.logger.error(`/add-quiz xử lý lỗi: ${(err as Error).message}`);
       await interaction.editReply({

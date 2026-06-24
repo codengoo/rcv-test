@@ -8,6 +8,7 @@ import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { validateEnv } from './config/env.validation';
 import { DiscordModule } from './discord/discord.module';
 import { ResultsModule } from './results/results.module';
+import { ExamModule } from './exam/exam.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { ResultsModule } from './results/results.module';
     }),
     DiscordModule,
     ResultsModule,
+    ExamModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
