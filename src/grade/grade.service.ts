@@ -32,6 +32,8 @@ export interface GradedQuestion {
   studentAnswer: string;
   correctAnswer: string;
   isCorrect: boolean;
+  type: string; // loại câu (carry từ Exam) — FE hiển thị
+  earnedPoints: number; // isCorrect ? 1 : 0 lúc chấm tự động
   question: string;
   options: string[];
   explanation: string;
@@ -50,6 +52,8 @@ export interface GradeOutput {
   score: string; // "9/12"
   correctCount: number;
   totalQuestions: number;
+  totalScore: number; // = correctCount (mỗi câu 1đ) lúc chấm tự động
+  maxScore: number; // = totalQuestions
   questions: GradedQuestion[];
   matchedFile: string; // nguồn đáp án dùng để chấm (mô tả)
   note: string;
@@ -128,6 +132,8 @@ export class GradeService {
         studentAnswer: q.studentAnswer,
         correctAnswer: src?.correctAnswer ?? '',
         isCorrect: q.isCorrect,
+        type: src?.type ?? '',
+        earnedPoints: q.isCorrect ? 1 : 0,
         question: src?.question ?? '',
         options: src?.options ?? [],
         explanation: src?.explanation ?? '',
@@ -150,6 +156,8 @@ export class GradeService {
       score,
       correctCount: result.correctCount,
       totalQuestions: result.totalQuestions,
+      totalScore: result.correctCount,
+      maxScore: result.totalQuestions,
       questions,
       matchedFile: `mongo:exams/${exam.examCode}`,
       note: result.note,

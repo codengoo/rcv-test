@@ -61,23 +61,25 @@ export class GoogleSheetsService implements OnModuleInit {
 
   /**
    * Append 1 row vào range (vd tên sheet "Sheet1" hoặc "Sheet1!A:F").
-   * Có retry exponential backoff; reset client nếu lỗi auth.
+   * Có retry exponential backoff; reset client nếu lỗi auth. Trả về
+   * `updatedRange` của dòng vừa thêm (vd "Sheet1!A5:G5") để định vị/sửa sau;
+   * '' nếu API không trả range.
    */
   async appendRow(
     spreadsheetId: string,
     range: string,
     values: CellValue[],
-  ): Promise<void> {
+  ): Promise<string> {
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
-        await this.getClient().spreadsheets.values.append({
+        const res = await this.getClient().spreadsheets.values.append({
           spreadsheetId,
           range,
           valueInputOption: 'RAW',
           insertDataOption: 'INSERT_ROWS',
           requestBody: { values: [values] },
         });
-        return;
+        return res.data.updates?.updatedRange ?? '';
       } catch (err) {
         const msg = (err as Error).message;
         if (attempt === MAX_RETRIES) {
@@ -89,6 +91,41 @@ export class GoogleSheetsService implements OnModuleInit {
           `appendRow lỗi (lần ${attempt}), retry sau ${backoff}ms: ${msg}`,
         );
         this.client = undefined; // re-init nếu lỗi do auth/expired
+        await new Promise((r) => setTimeout(r, backoff));
+      }
+    }
+    return '';
+  }
+
+  /**
+   * Ghi đè giá trị 1 ô/range (vd "Sheet1!E5"). Dùng khi giám thị cập nhật lại
+   * điểm. Có retry/backoff như appendRow.
+   */
+  async updateCell(
+    spreadsheetId: string,
+    range: string,
+    value: CellValue,
+  ): Promise<void> {
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        await this.getClient().spreadsheets.values.update({
+          spreadsheetId,
+          range,
+          valueInputOption: 'RAW',
+          requestBody: { values: [[value]] },
+        });
+        return;
+      } catch (err) {
+        const msg = (err as Error).message;
+        if (attempt === MAX_RETRIES) {
+          this.logger.error(`updateCell fail sau ${MAX_RETRIES} lần: ${msg}`);
+          throw err;
+        }
+        const backoff = 500 * 2 ** (attempt - 1);
+        this.logger.warn(
+          `updateCell lỗi (lần ${attempt}), retry sau ${backoff}ms: ${msg}`,
+        );
+        this.client = undefined;
         await new Promise((r) => setTimeout(r, backoff));
       }
     }
