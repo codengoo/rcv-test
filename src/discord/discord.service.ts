@@ -252,6 +252,7 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
   private async handleAddQuiz(
     interaction: ChatInputCommandInteraction,
   ): Promise<void> {
+    const t0 = Date.now();
     const file = interaction.options.getAttachment("file", true);
     this.logger.log(
       `/add-quiz từ ${interaction.user.tag}: ${file.name} (${file.contentType})`,
@@ -292,6 +293,9 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
         ? `${this.resultWebUrl}?exam_edit=${result.editCode}`
         : "";
 
+      // Thời gian xử lý.
+      const elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
+
       const quizEmbed = new EmbedBuilder()
         .setColor(0x2ecc71)
         .setTitle(`✅ ${result.title || result.originalName}`)
@@ -302,6 +306,7 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
           { name: "File đề", value: result.originalName },
           { name: "Đáp án (JSON)", value: "`" + result.savedPath + "`" },
           { name: "Bản giải (MD)", value: "`" + result.mdPath + "`" },
+          { name: "⏱️ Thời gian xử lý", value: `${elapsedSec}s`, inline: true },
         );
       if (examLink) {
         quizEmbed.addFields({
