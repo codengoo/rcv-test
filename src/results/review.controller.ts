@@ -13,6 +13,7 @@ import {
   ReviewEdit,
   SubmissionService,
   formatScore,
+  statusText,
 } from '../submission/submission.service';
 import { SubmissionDocument } from '../submission/submission.schema';
 import { GoogleSheetsService } from '../shared/google-sheets/google-sheets.service';
@@ -48,18 +49,18 @@ function driveImageUrl(fileId: string): string {
 }
 
 /**
- * Định vị ô Điểm (cột E) từ range append, vd "Kết quả!A5:G5" -> "Kết quả!E5".
- * null nếu range không parse được. Cột E khớp thứ tự ghi Sheet ở DiscordService
- * (A Họ tên · B Bố/mẹ · C SĐT · D Lớp · E Điểm · F Ảnh · G Link KQ).
+ * Định vị 1 ô theo cột từ range append, vd cellFromRange("Kết quả!A5:G5", "E")
+ * -> "Kết quả!E5". null nếu range không parse được. Thứ tự cột khớp DiscordService
+ * (A Họ tên · B Bố/mẹ · C SĐT · D Lớp · E Điểm · F Trạng thái · G Link KQ).
  */
-function scoreCellFromRange(range: string): string | null {
+function cellFromRange(range: string, col: string): string | null {
   // Tách prefix tên sheet (phần trước "!") nếu có.
   const bang = range.lastIndexOf('!');
   const prefix = bang >= 0 ? range.slice(0, bang + 1) : '';
   const a1 = bang >= 0 ? range.slice(bang + 1) : range;
   const m = a1.match(/^[A-Z]+(\d+):[A-Z]+\d+$/);
   if (!m) return null;
-  return `${prefix}E${m[1]}`;
+  return `${prefix}${col}${m[1]}`;
 }
 
 @Controller('api/review')
@@ -98,19 +99,28 @@ export class ReviewController {
     return this.toReviewDetail(doc);
   }
 
-  /** Cập nhật ô Điểm (cột E) trong Sheet theo sheetRange đã lưu lúc chấm. */
+  /** Cập nhật ô Điểm (E) + Trạng thái (F) trong Sheet theo sheetRange đã lưu. */
   private async syncSheetScore(doc: SubmissionDocument): Promise<void> {
     if (!this.sheetId || !doc.sheetRange) return;
-    const cell = scoreCellFromRange(doc.sheetRange);
-    if (!cell) return;
+    const scoreCell = cellFromRange(doc.sheetRange, 'E');
+    const statusCell = cellFromRange(doc.sheetRange, 'F');
     try {
-      await this.sheets.updateCell(
-        this.sheetId,
-        cell,
-        `${formatScore(doc.totalScore)} điểm`,
-      );
+      if (scoreCell) {
+        await this.sheets.updateCell(
+          this.sheetId,
+          scoreCell,
+          formatScore(doc.totalScore),
+        );
+      }
+      if (statusCell) {
+        await this.sheets.updateCell(
+          this.sheetId,
+          statusCell,
+          statusText(doc.status),
+        );
+      }
       this.logger.log(
-        `Cập nhật Sheet ${cell} = ${doc.totalScore}đ (reviewCode ${doc.reviewCode})`,
+        `Cập nhật Sheet ${scoreCell ?? '?'}=${doc.totalScore}đ, ${statusCell ?? '?'}=${doc.status} (reviewCode ${doc.reviewCode})`,
       );
     } catch (err) {
       this.logger.warn(

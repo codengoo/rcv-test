@@ -25,6 +25,7 @@ import { GradeService, GradeImage } from "../grade/grade.service";
 import {
   SubmissionService,
   formatScore,
+  statusText,
 } from "../submission/submission.service";
 import sharp from "sharp";
 
@@ -410,8 +411,6 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
         this.uploadAllToDrive(prepared, examCode),
       ]);
 
-      // Link Drive (nối nhiều ảnh bằng newline) — ghi vào Sheet.
-      const imageLinks = uploaded.map((u) => u.link).join("\n");
       const scoreText = formatScore(result.totalScore); // "3.75"
 
       // 3) Lưu Mongo TRƯỚC (cần _id + reviewCode để dựng link), best-effort.
@@ -449,15 +448,15 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
         ? `${this.resultWebUrl}?review_code=${submission.reviewCode}`
         : "";
 
-      // 4) Ghi Sheet 7 cột rồi lưu lại range để giám thị cập nhật điểm sau.
-      // A Họ tên HS · B Tên bố/mẹ · C SĐT · D Lớp · E Điểm · F Link ảnh · G Link xem KQ.
+      // 4) Ghi Sheet rồi lưu lại range để giám thị cập nhật điểm/trạng thái sau.
+      // A Họ tên HS · B Tên bố/mẹ · C SĐT · D Lớp · E Điểm · F Trạng thái · G Link xem KQ.
       const row: CellValue[] = [
         result.fullName,
         result.parentName,
         result.parentPhone,
         result.className,
-        `${scoreText} điểm`,
-        imageLinks,
+        scoreText,
+        statusText(submission?.status ?? "auto_graded"),
         resultLink,
       ];
       try {
@@ -496,12 +495,13 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
           { name: "Bố mẹ", value: result.parentName || "-", inline: true },
           { name: "SĐT", value: result.parentPhone || "-", inline: true },
           { name: "Trạng thái", value: "🟡 Đã chấm tự động", inline: true },
-          { name: "Đáp án dùng", value: result.matchedFile },
+          { name: "Đáp án dùng", value: result.matchedFile, inline: true },
           {
             name: "Mã đề trên ảnh",
             value: `${result.extractedExamCode || "(không đọc được)"}${
               codeMismatch ? " ⚠️ lệch mã đề nhập tay" : ""
             }`,
+            inline: true,
           },
           { name: "⏱️ Thời gian xử lý", value: `${elapsedSec}s`, inline: true },
         );

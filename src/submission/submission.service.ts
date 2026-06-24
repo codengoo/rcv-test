@@ -60,6 +60,13 @@ export function formatScore(n: number): string {
   return Number(roundScore(n).toFixed(2)).toString();
 }
 
+/** Nhãn trạng thái (không emoji) để ghi vào Sheet. */
+export function statusText(status: string): string {
+  return status === SUBMISSION_STATUS.CONFIRMED
+    ? 'Đã xác nhận bởi cán bộ chấm thi'
+    : 'Đã chấm tự động';
+}
+
 /** Code 6 số ngẫu nhiên "000000".."999999" cho link sửa của giám thị. */
 function randomReviewCode(): string {
   return Math.floor(Math.random() * 1_000_000)
