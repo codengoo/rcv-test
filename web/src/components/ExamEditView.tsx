@@ -26,6 +26,21 @@ interface EditQuestion {
   explanation: string;
 }
 
+/** Chữ cái đầu (A–D) của 1 lựa chọn/đáp án, '' nếu không có. */
+function answerLetter(s: string): string {
+  const m = /^([A-D])\b[.)]?/i.exec(s.trim());
+  return m ? m[1].toUpperCase() : '';
+}
+
+/** Lựa chọn `opt` có phải đáp án đúng hiện tại không (khớp theo chữ cái A–D). */
+function isChosen(opt: string, answer: string): boolean {
+  if (!answer) return false;
+  const lo = answerLetter(opt);
+  const la = answerLetter(answer);
+  if (lo && la) return lo === la;
+  return opt.trim() === answer.trim();
+}
+
 function toEdit(qs: ExamDetail['questions']): EditQuestion[] {
   return qs.map((q) => ({
     id: q.id,
@@ -134,7 +149,8 @@ export function ExamEditView({ code, initial }: Props) {
                   </button>
                 </div>
                 {q.question && <p className="my-1">{q.question}</p>}
-                {q.options.length > 0 && (
+                {/* Chế độ xem: liệt kê lựa chọn (trắc nghiệm). */}
+                {!isEditing && q.options.length > 0 && (
                   <ul className={optionsList}>
                     {q.options.map((opt, i) => (
                       <li key={i}>{opt}</li>
@@ -144,17 +160,49 @@ export function ExamEditView({ code, initial }: Props) {
 
                 {isEditing ? (
                   <>
-                    <label className="mt-2.5 flex flex-col gap-1.5 text-sm text-muted">
-                      Đáp án đúng
-                      <input
-                        type="text"
-                        value={q.correctAnswer}
-                        onChange={(e) =>
-                          update(q.id, { correctAnswer: e.target.value })
-                        }
-                        className="rounded-lg border border-border bg-bg px-2.5 py-2 text-text focus:outline-none focus:border-primary"
-                      />
-                    </label>
+                    {q.options.length > 0 ? (
+                      // Trắc nghiệm: bấm A/B/C/D để chọn lại đáp án đúng.
+                      <div className="mt-2.5">
+                        <span className="text-sm text-muted">
+                          Chọn đáp án đúng
+                        </span>
+                        <div className="mt-1.5 flex flex-col gap-2">
+                          {q.options.map((opt, i) => {
+                            const chosen = isChosen(opt, q.correctAnswer);
+                            return (
+                              <button
+                                key={i}
+                                type="button"
+                                onClick={() =>
+                                  update(q.id, { correctAnswer: opt })
+                                }
+                                className={`cursor-pointer rounded-lg border px-3 py-2 text-left transition-colors ${
+                                  chosen
+                                    ? 'border-correct bg-correct/10 text-correct'
+                                    : 'border-border hover:bg-surface2'
+                                }`}
+                              >
+                                {chosen ? '● ' : '○ '}
+                                {opt}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : (
+                      // Tự luận/điền: nhập đáp án đúng bằng text.
+                      <label className="mt-2.5 flex flex-col gap-1.5 text-sm text-muted">
+                        Đáp án đúng
+                        <input
+                          type="text"
+                          value={q.correctAnswer}
+                          onChange={(e) =>
+                            update(q.id, { correctAnswer: e.target.value })
+                          }
+                          className="rounded-lg border border-border bg-bg px-2.5 py-2 text-text focus:outline-none focus:border-primary"
+                        />
+                      </label>
+                    )}
                     <label className="mt-2.5 flex flex-col gap-1.5 text-sm text-muted">
                       Lời giải
                       <textarea
