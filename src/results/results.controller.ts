@@ -8,7 +8,10 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import { SubmissionService } from '../submission/submission.service';
+import {
+  SubmissionService,
+  formatScore,
+} from '../submission/submission.service';
 import { SubmissionDocument } from '../submission/submission.schema';
 
 /** Mục công khai trong danh sách kết quả (KHÔNG kèm phone/ảnh/đáp án). */
@@ -24,21 +27,26 @@ interface ResultListItem {
 /** Chi tiết kết quả (trả sau khi unlock đúng accessCode). */
 interface ResultDetail {
   id: string;
+  status: string;
   fullName: string;
   className: string;
   examCode: string;
   score: string;
   correctCount: number;
   totalQuestions: number;
+  totalScore: number;
+  scoreText: string;
   note: string;
   images: { url: string }[];
   questions: {
     id: string;
+    type: string;
     question: string;
     options: string[];
     studentAnswer: string;
     correctAnswer: string;
     isCorrect: boolean;
+    earnedPoints: number;
     explanation: string;
   }[];
 }
@@ -90,23 +98,30 @@ export class ResultsController {
   }
 
   private toDetail(d: SubmissionDocument): ResultDetail {
+    // Bản ghi cũ (trước tính năng review) thiếu totalScore → fallback correctCount.
+    const totalScore = d.totalScore || d.correctCount;
     return {
       id: d._id.toString(),
+      status: d.status || 'auto_graded',
       fullName: d.fullName,
       className: d.className,
       examCode: d.examCode,
       score: d.score,
       correctCount: d.correctCount,
       totalQuestions: d.totalQuestions,
+      totalScore,
+      scoreText: formatScore(totalScore),
       note: d.note,
       images: d.images.map((img) => ({ url: driveImageUrl(img.fileId) })),
       questions: d.questions.map((q) => ({
         id: q.id,
+        type: q.type,
         question: q.question,
         options: q.options,
         studentAnswer: q.studentAnswer,
         correctAnswer: q.correctAnswer,
         isCorrect: q.isCorrect,
+        earnedPoints: q.earnedPoints,
         explanation: q.explanation,
       })),
     };
