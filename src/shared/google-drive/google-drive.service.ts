@@ -11,6 +11,13 @@ export interface DriveUpload {
   link: string; // webViewLink (xem được nếu đã chia sẻ)
 }
 
+/** Metadata 1 file trong folder (dùng để duyệt folder đề). */
+export interface DriveFile {
+  id: string;
+  name: string;
+  mimeType: string;
+}
+
 /**
  * Generic Google Drive client (googleapis). Xác thực bằng OAuth2 của TÀI KHOẢN
  * người dùng (không phải service account) — vì service account không có quota
@@ -99,5 +106,64 @@ export class GoogleDriveService implements OnModuleInit {
       }
     }
     throw new Error('uploadFile: unreachable');
+  }
+
+  /**
+   * Liệt kê các file (không phải folder, chưa xóa) trong 1 folder Drive. Tự
+   * phân trang để lấy hết. Trả id + name + mimeType để caller lọc PDF/DOCX và
+   * đọc mã đề từ tên file.
+   */
+  async listFiles(folderId: string): Promise<DriveFile[]> {
+    const drive = this.getClient();
+    const files: DriveFile[] = [];
+    let pageToken: string | undefined;
+    do {
+      const res = await drive.files.list({
+        q: `'${folderId}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'`,
+        fields: 'nextPageToken, files(id, name, mimeType)',
+        pageSize: 1000,
+        pageToken,
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+      });
+      for (const f of res.data.files ?? []) {
+        if (f.id && f.name) {
+          files.push({ id: f.id, name: f.name, mimeType: f.mimeType ?? '' });
+        }
+      }
+      pageToken = res.data.nextPageToken ?? undefined;
+    } while (pageToken);
+    this.logger.log(`listFiles: folder ${folderId} có ${files.length} file`);
+    return files;
+  }
+
+  /**
+   * Tải nội dung 1 file Drive về Buffer (alt=media). Có retry + reset client nếu
+   * lỗi auth, giống uploadFile.
+   */
+  async downloadFile(fileId: string): Promise<Buffer> {
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const drive = this.getClient();
+        const res = await drive.files.get(
+          { fileId, alt: 'media', supportsAllDrives: true },
+          { responseType: 'arraybuffer' },
+        );
+        return Buffer.from(res.data as ArrayBuffer);
+      } catch (err) {
+        const msg = (err as Error).message;
+        if (attempt === MAX_RETRIES) {
+          this.logger.error(`downloadFile fail sau ${MAX_RETRIES} lần: ${msg}`);
+          throw err;
+        }
+        const backoff = 500 * 2 ** (attempt - 1);
+        this.logger.warn(
+          `downloadFile lỗi (lần ${attempt}), retry sau ${backoff}ms: ${msg}`,
+        );
+        this.client = undefined;
+        await new Promise((r) => setTimeout(r, backoff));
+      }
+    }
+    throw new Error('downloadFile: unreachable');
   }
 }

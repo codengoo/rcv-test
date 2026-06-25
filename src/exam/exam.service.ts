@@ -137,6 +137,20 @@ export class ExamService {
     return doc;
   }
 
+  /** Xóa TẤT CẢ đề (cho /sync-quizzes chế độ replace). Trả số đề đã xóa. */
+  async deleteAll(): Promise<number> {
+    const res = await this.examModel.deleteMany({});
+    const count = res.deletedCount ?? 0;
+    this.logger.warn(`Đã xóa toàn bộ ${count} đề (sync replace)`);
+    return count;
+  }
+
+  /** Tập mã đề (uppercase) hiện có — để /sync-quizzes lọc "chỉ thêm đề mới". */
+  async existingExamCodes(): Promise<Set<string>> {
+    const docs = await this.examModel.find({}, { examCode: 1 }).lean();
+    return new Set(docs.map((d) => d.examCode));
+  }
+
   /** Danh sách đề (examCode + title) cho dropdown /grading. */
   async listExams(): Promise<{ examCode: string; title: string }[]> {
     const docs = await this.examModel

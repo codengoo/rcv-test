@@ -16,6 +16,12 @@ export class EnvironmentVariables {
   @IsString()
   GOOGLE_DRIVE_FOLDER_ID!: string;
 
+  // ID folder Google Drive chứa các file đề (rcv-<mã đề>.pdf/docx) cho lệnh
+  // /sync-quizzes (nạp hàng loạt). Bỏ trống = lệnh báo lỗi khi gọi.
+  @IsOptional()
+  @IsString()
+  GOOGLE_DRIVE_EXAM_FOLDER_ID?: string;
+
   // OAuth2 của TÀI KHOẢN người dùng để upload Drive (service account không có
   // quota lưu trữ). Lấy refresh token 1 lần bằng: npm run token:drive
   @IsString()

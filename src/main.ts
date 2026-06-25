@@ -11,7 +11,7 @@ async function bootstrap() {
   });
   // Dev: FE Vite (5173) gọi API (3000) khác origin → bật CORS. Prod cùng origin.
   app.enableCors();
-  const port = Number(process.env.PORT ?? 3000);
+  const port = Number(process.env.PORT ?? 3333);
   await app.listen(port);
   Logger.log(`App started — HTTP server listening on :${port}`, 'Bootstrap');
 }

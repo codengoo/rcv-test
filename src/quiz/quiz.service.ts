@@ -61,6 +61,27 @@ export class QuizService {
   }
 
   /**
+   * Đọc mã đề từ tên file theo cấu trúc "rcv-<mã đề>.<ext>". Bỏ phần mở rộng,
+   * bỏ tiền tố "rcv-" (không phân biệt hoa thường), uppercase. '' nếu không khớp.
+   * Vd: "rcv-A01.pdf" → "A01"; "RCV-de2.docx" → "DE2".
+   */
+  examCodeFromFilename(name: string): string {
+    const base = name.replace(/\.[^.]+$/, ''); // bỏ đuôi .pdf/.docx
+    const m = /^rcv-(.+)$/i.exec(base.trim());
+    return (m ? m[1] : '').trim().toUpperCase();
+  }
+
+  /** Xóa toàn bộ đề (sync replace). Trả số đề đã xóa. */
+  deleteAllExams(): Promise<number> {
+    return this.exams.deleteAll();
+  }
+
+  /** Tập mã đề (uppercase) hiện có — lọc "chỉ thêm đề mới". */
+  existingExamCodes(): Promise<Set<string>> {
+    return this.exams.existingExamCodes();
+  }
+
+  /**
    * Luồng /add-quiz: AI giải đề → Markdown (text tự do, không bị cắt vỡ JSON),
    * rồi PARSE cục bộ thành Exam và lưu cả .md (bản giải) lẫn .json (đáp án chấm).
    */
@@ -68,6 +89,7 @@ export class QuizService {
     buffer: Buffer,
     mimeType: string,
     originalName: string,
+    examCodeOverride?: string,
   ): Promise<QuizResult> {
     // 1) Dựng input part theo định dạng. PDF: filePart(Buffer) — GeminiService
     //    tự quyết định upload File API (PDF > 2MB) hay inline, và tự dọn asset.
@@ -99,6 +121,11 @@ export class QuizService {
 
     // 3) Convert Markdown → Exam (thuần regex) và lưu .json để chấm.
     const exam = this.parseMarkdownToExam(md);
+    // /sync-quizzes: mã đề lấy từ TÊN FILE (rcv-<mã đề>) là nguồn chuẩn — đè lên
+    // mã đề AI đọc được (đảm bảo khớp tên file khi đối chiếu/chấm sau này).
+    if (examCodeOverride?.trim()) {
+      exam.examCode = examCodeOverride.trim().toUpperCase();
+    }
     this.logger.log(
       `Quiz (MD→JSON): title="${exam.title}" examCode="${exam.examCode}" câu=${exam.questions.length}`,
     );

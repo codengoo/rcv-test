@@ -122,6 +122,7 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
   private readonly sheetId: string;
   private readonly guildId: string;
   private readonly driveFolderId: string;
+  private readonly examFolderId: string;
   private readonly resultWebUrl: string;
   private sheetRange = "";
 
@@ -138,6 +139,9 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
     this.driveFolderId = this.config.getOrThrow<string>(
       "GOOGLE_DRIVE_FOLDER_ID",
     );
+    // Folder chứa file đề cho /sync-quizzes (tùy chọn — báo lỗi khi gọi nếu thiếu).
+    this.examFolderId =
+      this.config.get<string>("GOOGLE_DRIVE_EXAM_FOLDER_ID") ?? "";
     // Base URL trang tra cứu kết quả (để chèn link vào reply). Có thể override
     // qua env RESULT_WEB_URL; mặc định domain production.
     this.resultWebUrl =
@@ -172,6 +176,8 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
       if (!interaction.isChatInputCommand()) return;
       if (interaction.commandName === "add-quiz") {
         void this.handleAddQuiz(interaction);
+      } else if (interaction.commandName === "sync-quizzes") {
+        void this.handleSyncQuizzes(interaction);
       } else if (interaction.commandName === "grading") {
         void this.handleGrade(interaction);
       }
@@ -198,6 +204,21 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
             .setName("file")
             .setDescription("File đề PDF hoặc DOCX")
             .setRequired(true),
+        );
+
+      // Nạp hàng loạt đề từ folder Drive đã cấu hình. Mặc định: xóa sạch đề cũ
+      // rồi nạp lại. only_new=true: giữ đề cũ, chỉ thêm mã đề chưa có.
+      const syncQuizzes = new SlashCommandBuilder()
+        .setName("sync-quizzes")
+        .setDescription(
+          "Nạp hàng loạt đề từ folder Drive (file rcv-<mã đề>.pdf/docx), AI giải & lưu",
+        )
+        .addBooleanOption((o) =>
+          o
+            .setName("only_new")
+            .setDescription(
+              "Chỉ thêm đề mới (giữ đề cũ, bỏ qua mã đề đã có). Mặc định: xóa & nạp lại tất cả",
+            ),
         );
 
       // Nhập tay mã đề (chọn file đáp án) + ảnh; AI đọc thông tin thí sinh,
@@ -237,9 +258,13 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
         );
 
       const guild = await this.client.guilds.fetch(this.guildId);
-      await guild.commands.set([addQuiz.toJSON(), grading.toJSON()]);
+      await guild.commands.set([
+        addQuiz.toJSON(),
+        syncQuizzes.toJSON(),
+        grading.toJSON(),
+      ]);
       this.logger.log(
-        `Đã đăng ký /add-quiz + /grading cho guild ${this.guildId}`,
+        `Đã đăng ký /add-quiz + /sync-quizzes + /grading cho guild ${this.guildId}`,
       );
     } catch (err) {
       this.logger.error(
@@ -322,6 +347,192 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
           new EmbedBuilder()
             .setColor(0xe74c3c)
             .setTitle("❌ Giải đề thất bại")
+            .setDescription((err as Error).message.slice(0, 1000)),
+        ],
+      });
+    }
+  }
+
+  /**
+   * Xử lý /sync-quizzes: duyệt folder Drive đã cấu hình → lọc file PDF/DOCX có
+   * tên rcv-<mã đề> → AI giải & lưu từng đề, báo tiến độ qua reply đã defer.
+   * - Mặc định (replace): XÓA SẠCH đề cũ rồi nạp lại toàn bộ.
+   * - only_new=true: giữ đề cũ, bỏ qua file có mã đề đã tồn tại (đối chiếu theo
+   *   tên file), chỉ giải & thêm đề mới.
+   */
+  private async handleSyncQuizzes(
+    interaction: ChatInputCommandInteraction,
+  ): Promise<void> {
+    const t0 = Date.now();
+    await interaction.deferReply();
+    const onlyNew = interaction.options.getBoolean("only_new") ?? false;
+    this.logger.log(
+      `/sync-quizzes từ ${interaction.user.tag}: only_new=${onlyNew}`,
+    );
+
+    if (!this.examFolderId) {
+      await interaction.editReply({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0xe74c3c)
+            .setTitle("❌ Chưa cấu hình folder đề")
+            .setDescription(
+              "Đặt biến môi trường `GOOGLE_DRIVE_EXAM_FOLDER_ID` (ID folder Drive chứa file đề) rồi thử lại.",
+            ),
+        ],
+      });
+      return;
+    }
+
+    // Embed tiến độ best-effort: cập nhật khi đổi bước/đổi file, nuốt lỗi edit.
+    const render = async (title: string, lines: string[]): Promise<void> => {
+      try {
+        await interaction.editReply({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(0x3498db)
+              .setTitle(title)
+              .setDescription(lines.join("\n").slice(0, 4000) || "…"),
+          ],
+        });
+      } catch {
+        // best-effort
+      }
+    };
+
+    try {
+      await render("⏳ Đang đọc folder đề…", ["📂 Liệt kê file trên Drive…"]);
+      const files = await this.drive.listFiles(this.examFolderId);
+
+      // CHỈ nạp file đặt tên đúng cấu trúc rcv-<mã đề>; mọi file khác trong
+      // folder bị bỏ qua hoàn toàn (không đếm, không báo).
+      const named = files
+        .map((f) => ({
+          file: f,
+          mime: f.mimeType.split(";")[0],
+          code: this.quiz.examCodeFromFilename(f.name),
+        }))
+        .filter((c) => c.code);
+
+      // Trong số file rcv-<mã đề>, loại file sai định dạng (không PDF/DOCX) — báo lại.
+      const valid = named.filter((c) => this.quiz.isSupported(c.mime));
+      const ignored = named.filter((c) => !this.quiz.isSupported(c.mime));
+
+      if (valid.length === 0) {
+        await interaction.editReply({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(0xe67e22)
+              .setTitle("⚠️ Không có đề để nạp")
+              .setDescription(
+                `Folder có ${files.length} file nhưng không file nào hợp lệ ` +
+                  "(cần PDF/DOCX đặt tên `rcv-<mã đề>.<ext>`).",
+              ),
+          ],
+        });
+        return;
+      }
+
+      // Lọc / dọn dữ liệu cũ theo chế độ.
+      let skippedExisting: string[] = [];
+      let toProcess = valid;
+      if (onlyNew) {
+        const existing = await this.quiz.existingExamCodes();
+        toProcess = valid.filter((c) => !existing.has(c.code));
+        skippedExisting = valid
+          .filter((c) => existing.has(c.code))
+          .map((c) => c.code);
+        await render("⏳ Đang nạp đề (chỉ đề mới)…", [
+          `🔎 ${valid.length} file hợp lệ • ${toProcess.length} đề mới • bỏ qua ${skippedExisting.length} đề đã có`,
+        ]);
+      } else {
+        await render("⏳ Đang nạp đề (xóa & nạp lại)…", [
+          "🗑️ Xóa toàn bộ đề cũ…",
+        ]);
+        const deleted = await this.quiz.deleteAllExams();
+        await render("⏳ Đang nạp đề (xóa & nạp lại)…", [
+          `🗑️ Đã xóa ${deleted} đề cũ • chuẩn bị nạp ${toProcess.length} đề`,
+        ]);
+      }
+
+      if (toProcess.length === 0) {
+        await interaction.editReply({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(0x2ecc71)
+              .setTitle("✅ Không có đề mới để thêm")
+              .setDescription(
+                `Tất cả ${valid.length} đề trong folder đã tồn tại.`,
+              ),
+          ],
+        });
+        return;
+      }
+
+      // Giải tuần tự (tránh quá tải Gemini), cập nhật tiến độ từng đề.
+      const done: string[] = [];
+      const failed: { code: string; msg: string }[] = [];
+      const modeLabel = onlyNew ? "chỉ đề mới" : "xóa & nạp lại";
+      for (let i = 0; i < toProcess.length; i++) {
+        const c = toProcess[i];
+        const header = `📦 Chế độ: ${modeLabel} • Tiến độ: ${i + 1}/${toProcess.length}`;
+        const recent = [...done.slice(-8), `⏳ rcv-${c.code} (${c.file.name})`];
+        await render("⏳ Đang giải & lưu đề…", [header, "", ...recent]);
+        try {
+          const buf = await this.drive.downloadFile(c.file.id);
+          const res = await this.quiz.solveAndSave(
+            buf,
+            c.mime,
+            c.file.name,
+            c.code,
+          );
+          done.push(`✅ rcv-${res.examCode || c.code} • ${res.questionCount} câu`);
+        } catch (err) {
+          const msg = (err as Error).message;
+          this.logger.error(`/sync-quizzes lỗi đề ${c.code}: ${msg}`);
+          failed.push({ code: c.code, msg });
+          done.push(`❌ rcv-${c.code} • ${msg.slice(0, 80)}`);
+        }
+      }
+
+      // Embed tổng kết.
+      const elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
+      const okCount = toProcess.length - failed.length;
+      const summary = new EmbedBuilder()
+        .setColor(failed.length === 0 ? 0x2ecc71 : 0xe67e22)
+        .setTitle(
+          `${failed.length === 0 ? "✅" : "⚠️"} Nạp đề xong: ${okCount}/${toProcess.length} thành công`,
+        )
+        .setDescription(
+          `Chế độ: **${modeLabel}** • ⏱️ ${elapsedSec}s` +
+            (onlyNew && skippedExisting.length
+              ? `\nBỏ qua ${skippedExisting.length} đề đã có: ${skippedExisting
+                  .map((c) => `rcv-${c}`)
+                  .join(", ")
+                  .slice(0, 500)}`
+              : "") +
+            (ignored.length
+              ? `\nBỏ qua ${ignored.length} file rcv-* sai định dạng (không PDF/DOCX)`
+              : ""),
+        );
+      this.addDetailFields(
+        summary,
+        done.length ? done : ["(không có đề nào được xử lý)"],
+      );
+      if (failed.length) {
+        this.addDetailFields(
+          summary,
+          failed.map((f) => `rcv-${f.code}: ${f.msg.slice(0, 150)}`),
+        );
+      }
+      await interaction.editReply({ embeds: [summary] });
+    } catch (err) {
+      this.logger.error(`/sync-quizzes xử lý lỗi: ${(err as Error).message}`);
+      await interaction.editReply({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0xe74c3c)
+            .setTitle("❌ Nạp đề thất bại")
             .setDescription((err as Error).message.slice(0, 1000)),
         ],
       });
