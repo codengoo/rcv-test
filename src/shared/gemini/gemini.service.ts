@@ -13,10 +13,9 @@ import {
 } from '@google/generative-ai/server';
 import { z } from 'zod';
 
-// const DEFAULT_MODEL = 'gemini-2.5-flash-lite';
-// const DEFAULT_MODEL = 'gemini-3.1-flash-lite';
-const DEFAULT_MODEL = 'gemini-3.5-flash';
-const MAX_RETRIES = 2;
+// Chuỗi model fallback (theo thứ tự ưu tiên): flash trước (nhanh/rẻ), hết key
+// của flash mới sang pro. Với mỗi model, lần lượt thử từng API key.
+const DEFAULT_MODELS = ['gemini-3.5-flash', 'gemini-3.1-pro'];
 // File API: chờ file chuyển ACTIVE (PDF/ảnh có thể PROCESSING vài giây).
 const FILE_ACTIVE_TIMEOUT_MS = 60_000;
 const FILE_POLL_INTERVAL_MS = 1_000;
@@ -63,42 +62,69 @@ interface PendingFilePart {
 export class GeminiService {
   private readonly logger = new Logger(GeminiService.name);
   private readonly llmCache = new Map<string, ChatGoogleGenerativeAI>();
-  private fileManager?: GoogleAIFileManager;
+  private readonly fileManagerCache = new Map<string, GoogleAIFileManager>();
+  private apiKeys?: string[];
 
   constructor(private readonly config: ConfigService) {}
 
-  private getFileManager(): GoogleAIFileManager {
-    if (!this.fileManager) {
-      const apiKey = this.config.getOrThrow<string>('GEMINI_API_KEY');
-      this.fileManager = new GoogleAIFileManager(apiKey);
+  /**
+   * Danh sách API key (GEMINI_API_KEY phân tách bằng dấu phẩy/khoảng trắng/xuống
+   * dòng). Cache lại sau lần đọc đầu. Ném lỗi nếu rỗng.
+   */
+  private getApiKeys(): string[] {
+    if (this.apiKeys) return this.apiKeys;
+    const raw = this.config.getOrThrow<string>('GEMINI_API_KEY');
+    const keys = raw
+      .split(/[\s,]+/)
+      .map((k) => k.trim())
+      .filter(Boolean);
+    if (!keys.length) throw new Error('GEMINI_API_KEY rỗng (cần ít nhất 1 key)');
+    this.apiKeys = keys;
+    return keys;
+  }
+
+  /** FileManager riêng cho từng API key (file upload bị gắn với key đã upload). */
+  private getFileManager(apiKey: string): GoogleAIFileManager {
+    let fm = this.fileManagerCache.get(apiKey);
+    if (!fm) {
+      fm = new GoogleAIFileManager(apiKey);
+      this.fileManagerCache.set(apiKey, fm);
     }
-    return this.fileManager;
+    return fm;
+  }
+
+  /** Lỗi quota/rate-limit (429 / RESOURCE_EXHAUSTED) → nên xoay sang key khác. */
+  private isQuotaError(err: unknown): boolean {
+    const msg = (err as Error)?.message ?? '';
+    return /\b429\b|quota|rate.?limit|RESOURCE_EXHAUSTED/i.test(msg);
   }
 
   /**
    * Upload 1 file (ảnh/PDF...) qua Gemini File API thay vì nhúng base64 inline.
    * Chờ tới khi file ACTIVE (ném lỗi nếu FAILED hoặc quá hạn). Nội bộ: việc dọn
-   * asset do resolveParts/runWithParts đảm nhiệm sau khi gọi model.
+   * asset do resolveParts/runWithRotation đảm nhiệm sau khi gọi model.
    */
   private async uploadFile(
+    apiKey: string,
     data: Buffer,
     mimeType: string,
     displayName?: string,
   ): Promise<UploadedFile> {
-    const fm = this.getFileManager();
+    const fm = this.getFileManager(apiKey);
     const { file } = await fm.uploadFile(data, { mimeType, displayName });
     this.logger.log(
       `Upload file ${file.name} (${file.sizeBytes} bytes, ${mimeType}), state=${file.state}`,
     );
-    const active = await this.waitActive(file);
+    const active = await this.waitActive(apiKey, file);
     return { name: active.name, uri: active.uri, mimeType: active.mimeType };
   }
 
   /** Poll getFile cho tới khi rời trạng thái PROCESSING; ném lỗi nếu FAILED. */
   private async waitActive(
+    apiKey: string,
     file: FileMetadataResponse,
   ): Promise<FileMetadataResponse> {
-    const fm = this.getFileManager();
+    const fm = this.getFileManager(apiKey);
     let meta = file;
     let waited = 0;
     while (meta.state === FileState.PROCESSING) {
@@ -120,9 +146,9 @@ export class GeminiService {
   }
 
   /** Xóa 1 file đã upload (best-effort: chỉ log warn nếu lỗi, không ném). */
-  private async deleteFile(name: string): Promise<void> {
+  private async deleteFile(apiKey: string, name: string): Promise<void> {
     try {
-      await this.getFileManager().deleteFile(name);
+      await this.getFileManager(apiKey).deleteFile(name);
       this.logger.log(`Xóa file ${name}`);
     } catch (err) {
       this.logger.warn(`Không xóa được file ${name}: ${(err as Error).message}`);
@@ -130,8 +156,8 @@ export class GeminiService {
   }
 
   /** Xóa nhiều file song song (best-effort). */
-  private async deleteFiles(names: string[]): Promise<void> {
-    await Promise.all(names.map((n) => this.deleteFile(n)));
+  private async deleteFiles(apiKey: string, names: string[]): Promise<void> {
+    await Promise.all(names.map((n) => this.deleteFile(apiKey, n)));
   }
 
   /**
@@ -155,6 +181,7 @@ export class GeminiService {
    * nhỏ → nhúng base64 inline. Part khác (text...) giữ nguyên.
    */
   private async resolveParts(
+    apiKey: string,
     parts: AiPart[],
     mode: UploadMode,
     uploadedNames: string[],
@@ -171,7 +198,7 @@ export class GeminiService {
         mode === 'always' ||
         (mode === 'auto' && data.length > UPLOAD_THRESHOLD_BYTES);
       if (shouldUpload) {
-        const up = await this.uploadFile(data, mimeType, displayName);
+        const up = await this.uploadFile(apiKey, data, mimeType, displayName);
         uploadedNames.push(up.name);
         out.push({
           type: 'media',
@@ -189,36 +216,14 @@ export class GeminiService {
     return out;
   }
 
-  /**
-   * Giải quyết file part → chạy callback với part đã resolve → LUÔN dọn các file
-   * đã upload ở finally (thành công hay lỗi đều xóa asset).
-   */
-  private async runWithParts<R>(
-    parts: AiPart[],
-    mode: UploadMode | undefined,
-    run: (resolved: AiPart[]) => Promise<R>,
-  ): Promise<R> {
-    const uploadedNames: string[] = [];
-    try {
-      const resolved = await this.resolveParts(
-        parts,
-        mode ?? 'auto',
-        uploadedNames,
-      );
-      return await run(resolved);
-    } finally {
-      if (uploadedNames.length) await this.deleteFiles(uploadedNames);
-    }
-  }
-
   private getLlm(
     model: string,
+    apiKey: string,
     thinkingBudget?: number,
   ): ChatGoogleGenerativeAI {
-    const key = `${model}:${thinkingBudget ?? 'default'}`;
+    const key = `${model}:${thinkingBudget ?? 'default'}:${apiKey}`;
     const cached = this.llmCache.get(key);
     if (cached) return cached;
-    const apiKey = this.config.getOrThrow<string>('GEMINI_API_KEY');
     // maxOutputTokens cao: đề thi giải đầy đủ + lời giải → JSON rất dài,
     // mặc định thấp khiến output bị cắt giữa chừng (Unterminated string).
     // thinkingBudget=0 → tắt "thinking" để giảm mạnh latency (caller tự chọn).
@@ -236,6 +241,75 @@ export class GeminiService {
   }
 
   /**
+   * Danh sách "attempt" theo thứ tự fallback: với MỖI model (flash trước, pro
+   * sau — hoặc chỉ model do caller chỉ định), lần lượt thử TỪNG api key. Hết key
+   * của model này mới sang model kế tiếp.
+   */
+  private buildAttempts(
+    modelOverride?: string,
+  ): { model: string; apiKey: string; keyIndex: number }[] {
+    const models = modelOverride ? [modelOverride] : DEFAULT_MODELS;
+    const keys = this.getApiKeys();
+    const attempts: { model: string; apiKey: string; keyIndex: number }[] = [];
+    for (const model of models) {
+      keys.forEach((apiKey, keyIndex) =>
+        attempts.push({ model, apiKey, keyIndex }),
+      );
+    }
+    return attempts;
+  }
+
+  /**
+   * Lõi xoay key + model: lần lượt thử từng (model, key) theo buildAttempts. Mỗi
+   * attempt tự resolve part bằng KEY của attempt đó (file upload phải cùng key
+   * với lời gọi model) và LUÔN dọn asset ở finally. Lỗi → log + thử attempt kế;
+   * hết attempt → ném lỗi cuối cùng.
+   */
+  private async runWithRotation<R>(
+    parts: AiPart[],
+    mode: UploadMode | undefined,
+    modelOverride: string | undefined,
+    thinkingBudget: number | undefined,
+    label: string,
+    run: (llm: ChatGoogleGenerativeAI, resolved: AiPart[]) => Promise<R>,
+  ): Promise<R> {
+    const attempts = this.buildAttempts(modelOverride);
+    const total = attempts.length;
+    let lastErr: unknown;
+    for (let i = 0; i < total; i++) {
+      const { model, apiKey, keyIndex } = attempts[i];
+      const uploadedNames: string[] = [];
+      try {
+        const resolved = await this.resolveParts(
+          apiKey,
+          parts,
+          mode ?? 'auto',
+          uploadedNames,
+        );
+        const llm = this.getLlm(model, apiKey, thinkingBudget);
+        this.logger.log(
+          `${label}: ${model} key #${keyIndex + 1} (attempt ${i + 1}/${total}, ${resolved.length} part)...`,
+        );
+        const result = await run(llm, resolved);
+        this.logger.log(`${label}: OK với ${model} key #${keyIndex + 1}`);
+        return result;
+      } catch (err) {
+        lastErr = err;
+        const quota = this.isQuotaError(err) ? ' (quota/rate-limit)' : '';
+        this.logger.warn(
+          `${label}: lỗi ${model} key #${keyIndex + 1}${quota}: ${(err as Error).message}`,
+        );
+      } finally {
+        if (uploadedNames.length) await this.deleteFiles(apiKey, uploadedNames);
+      }
+    }
+    this.logger.error(`${label}: thất bại sau ${total} attempt (mọi key/model).`);
+    throw lastErr instanceof Error
+      ? lastErr
+      : new Error(`${label}: tất cả attempt đều fail`);
+  }
+
+  /**
    * Cast các AiPart (dạng MessageContentComplex "cũ") sang kiểu content mới của
    * @langchain/core v1. Runtime google-genai vẫn nhận các part dạng cũ; chỉ
    * phần type bị siết lại nên cần cast tập trung tại đây.
@@ -250,8 +324,8 @@ export class GeminiService {
   }
 
   /**
-   * Gọi model với content parts, ép structured output theo zod schema.
-   * Có retry ngắn; ném lỗi nếu vẫn fail sau MAX_RETRIES (caller tự xử lý).
+   * Gọi model với content parts, ép structured output theo zod schema. Tự xoay
+   * key + model (flash→pro) khi lỗi; ném lỗi nếu mọi attempt fail (caller xử lý).
    */
   async extractStructured<T>(
     schema: z.ZodType<T>,
@@ -263,27 +337,21 @@ export class GeminiService {
       thinkingBudget?: number;
     },
   ): Promise<T> {
-    const model = opts?.model ?? DEFAULT_MODEL;
     const name = opts?.name ?? 'output';
-    return this.runWithParts(parts, opts?.upload, async (resolved) => {
-      // cast any: tránh deep type instantiation của withStructuredOutput + zod.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const structured = (
-        this.getLlm(model, opts?.thinkingBudget) as any
-      ).withStructuredOutput(
-        schema,
-        { name },
-      );
-      const message = new HumanMessage({ content: this.toContent(resolved) });
-
-      this.logger.log(
-        `Gọi ${model} structured "${name}" (${resolved.length} part)...`,
-      );
-      return this.withRetry(
-        () => structured.invoke([message]) as Promise<T>,
-        'extractStructured',
-      );
-    });
+    return this.runWithRotation(
+      parts,
+      opts?.upload,
+      opts?.model,
+      opts?.thinkingBudget,
+      `extractStructured "${name}"`,
+      (llm, resolved) => {
+        // cast any: tránh deep type instantiation của withStructuredOutput + zod.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const structured = (llm as any).withStructuredOutput(schema, { name });
+        const message = new HumanMessage({ content: this.toContent(resolved) });
+        return structured.invoke([message]) as Promise<T>;
+      },
+    );
   }
 
   /**
@@ -294,13 +362,14 @@ export class GeminiService {
     parts: AiPart[],
     opts?: { model?: string; upload?: UploadMode; thinkingBudget?: number },
   ): Promise<string> {
-    const model = opts?.model ?? DEFAULT_MODEL;
-    return this.runWithParts(parts, opts?.upload, async (resolved) => {
-      const llm = this.getLlm(model, opts?.thinkingBudget);
-      const message = new HumanMessage({ content: this.toContent(resolved) });
-
-      this.logger.log(`Gọi ${model} text (${resolved.length} part)...`);
-      return this.withRetry(async () => {
+    return this.runWithRotation(
+      parts,
+      opts?.upload,
+      opts?.model,
+      opts?.thinkingBudget,
+      'generateText',
+      async (llm, resolved) => {
+        const message = new HumanMessage({ content: this.toContent(resolved) });
         const result = await llm.invoke([message]);
         const content = result.content;
         if (typeof content === 'string') return content;
@@ -308,27 +377,7 @@ export class GeminiService {
         return content
           .map((c) => (typeof c === 'object' && 'text' in c ? c.text : ''))
           .join('');
-      }, 'generateText');
-    });
-  }
-
-  /** Bọc retry ngắn + log dùng chung cho các lời gọi model. */
-  private async withRetry<R>(fn: () => Promise<R>, label: string): Promise<R> {
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const result = await fn();
-        this.logger.log(`${label} phản hồi OK (lần ${attempt})`);
-        return result;
-      } catch (err) {
-        const msg = (err as Error).message;
-        if (attempt === MAX_RETRIES) {
-          this.logger.error(`${label} fail sau ${MAX_RETRIES} lần: ${msg}`);
-          throw err;
-        }
-        this.logger.warn(`${label} lỗi (lần ${attempt}), retry: ${msg}`);
-        await new Promise((r) => setTimeout(r, 500 * attempt));
-      }
-    }
-    throw new Error(`${label}: unreachable`);
+      },
+    );
   }
 }

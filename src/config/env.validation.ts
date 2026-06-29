@@ -33,7 +33,8 @@ export class EnvironmentVariables {
   @IsString()
   GOOGLE_OAUTH_REFRESH_TOKEN!: string;
 
-  // API key Gemini cho luồng đọc/chấm bài làm + giải đề.
+  // API key Gemini cho luồng đọc/chấm bài làm + giải đề. Có thể khai báo NHIỀU
+  // key phân tách bằng dấu phẩy → tự xoay key khi lỗi/hết quota (fallback).
   @IsString()
   GEMINI_API_KEY!: string;
 
